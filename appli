@@ -1,0 +1,240 @@
+# ==============================
+# SPINESCAN V3 — REVPOINT
+# Rasterstereography Inspired
+# ==============================
+
+import streamlit as st
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib import colors as mcolors
+from scipy.signal import savgol_filter
+import tempfile, os
+from plyfile import PlyData
+
+# ==============================
+# PAGE
+# ==============================
+
+st.set_page_config(page_title="SpineScan V3", layout="wide")
+st.title("🦴 SpineScan V3 — Rasterstereography Inspired (Revopoint)")
+
+# ==============================
+# LOAD PLY
+# ==============================
+
+def load_ply_numpy(file):
+    plydata = PlyData.read(file)
+    v = plydata["vertex"]
+    return np.vstack([v["x"], v["y"], v["z"]]).T.astype(float)
+
+# ==============================
+# BUILD DEPTH SURFACE
+# ==============================
+
+def build_depth_surface(points, dx=0.5, dy=0.5):
+    x, y, z = points[:,0], points[:,1], points[:,2]
+
+    xmin, xmax = np.percentile(x, [1,99])
+    ymin, ymax = np.percentile(y, [1,99])
+
+    nx = int((xmax-xmin)/dx)+1
+    ny = int((ymax-ymin)/dy)+1
+
+    grid = np.full((ny, nx), np.nan)
+
+    ix = ((x - xmin)/dx).astype(int)
+    iy = ((y - ymin)/dy).astype(int)
+
+    valid = (ix>=0)&(ix<nx)&(iy>=0)&(iy<ny)
+
+    for i in np.where(valid)[0]:
+        gx, gy = ix[i], iy[i]
+        if np.isnan(grid[gy,gx]) or z[i] > grid[gy,gx]:
+            grid[gy,gx] = z[i]
+
+    # fill holes
+    for col in range(nx):
+        col_vals = grid[:,col]
+        mask = ~np.isnan(col_vals)
+        if np.sum(mask) > 3:
+            grid[:,col] = np.interp(np.arange(ny), np.where(mask)[0], col_vals[mask])
+
+    return grid, xmin, ymin, dx, dy
+
+# ==============================
+# MIDLINE SYMMETRY
+# ==============================
+
+def extract_midline_symmetry_surface(grid, xmin, ymin, dx, dy):
+    ny, nx = grid.shape
+    midline = []
+
+    for j in range(ny):
+        row = grid[j]
+        if np.isnan(row).all():
+            continue
+
+        xs = np.arange(nx)
+        valid = ~np.isnan(row)
+        xs = xs[valid]
+        zs = row[valid]
+
+        if len(xs) < 10:
+            continue
+
+        x_left = np.percentile(xs, 10)
+        x_right = np.percentile(xs, 90)
+        x_mid = int(0.5*(x_left+x_right))
+
+        z_mid = row[x_mid] if not np.isnan(row[x_mid]) else np.nanmedian(zs)
+
+        midline.append([xmin + x_mid*dx, ymin + j*dy, z_mid])
+
+    return np.array(midline)
+
+# ==============================
+# PSIS DETECTION
+# ==============================
+
+def detect_psis(grid, xmin, ymin, dx, dy):
+    ny, nx = grid.shape
+    y_low = int(ny*0.15)
+    y_high = int(ny*0.35)
+
+    band = grid[y_low:y_high]
+    if np.isnan(band).all():
+        return None, None, 0
+
+    depth = np.nanmedian(band) - band
+    idx = np.unravel_index(np.argsort(depth.ravel())[-150:], depth.shape)
+
+    xs = idx[1]
+    ys = idx[0] + y_low
+
+    if len(xs) < 10:
+        return None, None, 0
+
+    x_med = np.median(xs)
+    left = xs[xs < x_med]
+    right = xs[xs > x_med]
+
+    if len(left)==0 or len(right)==0:
+        return None, None, 0
+
+    lx = int(np.median(left))
+    rx = int(np.median(right))
+    ly = int(np.median(ys[xs < x_med]))
+    ry = int(np.median(ys[xs > x_med]))
+
+    conf = min(1, len(xs)/120)
+
+    psis_left = (xmin + lx*dx, ymin + ly*dy)
+    psis_right = (xmin + rx*dx, ymin + ry*dy)
+
+    return psis_left, psis_right, conf
+
+# ==============================
+# ANGLES LORDOSE / CYPHOSE
+# ==============================
+
+def compute_angles(spine):
+    spine = spine[np.argsort(spine[:,1])]
+    y = spine[:,1]
+    z = spine[:,2]
+
+    z_s = savgol_filter(z, 21, 3)
+    dz = np.gradient(z_s, y)
+    d2z = np.gradient(dz, y)
+
+    j = np.argmin(np.abs(d2z))
+    y_j = y[j]
+
+    i_bot = int(len(y)*0.1)
+    i_top = int(len(y)*0.9)
+
+    theta = np.degrees(np.arctan(dz))
+
+    lordosis = abs(theta[j] - theta[i_bot])
+    kyphosis = abs(theta[i_top] - theta[j])
+
+    return lordosis, kyphosis, y_j
+
+# ==============================
+# PLOT COLOR CURVE
+# ==============================
+
+def plot_curve(ax, x, y, score):
+    pts = np.column_stack([x,y]).reshape(-1,1,2)
+    segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
+
+    cmap = plt.get_cmap("RdYlGn")
+    norm = mcolors.Normalize(0,1)
+
+    lc = LineCollection(segs, cmap=cmap, norm=norm)
+    lc.set_array(score[:-1])
+    lc.set_linewidth(2.6)
+    ax.add_collection(lc)
+    ax.autoscale_view()
+
+# ==============================
+# MAIN
+# ==============================
+
+ply = st.file_uploader("Importer scan Revopoint (.PLY)", type=["ply"])
+
+if ply:
+
+    pts = load_ply_numpy(ply) * 0.1
+    pts[:,0] -= np.median(pts[:,0])
+
+    grid, xmin, ymin, dx, dy = build_depth_surface(pts, dx=0.5, dy=0.5)
+    spine = extract_midline_symmetry_surface(grid, xmin, ymin, dx, dy)
+
+    if spine.shape[0] < 20:
+        st.error("Midline impossible à extraire")
+        st.stop()
+
+    psis_L, psis_R, psis_conf = detect_psis(grid, xmin, ymin, dx, dy)
+
+    # Fiabilité surface
+    surface_conf = np.sum(~np.isnan(grid))/grid.size
+    global_conf = 0.6*surface_conf + 0.4*psis_conf
+
+    # Flèche lombaire
+    fl = abs(np.min(spine[:,2]) - np.max(spine[:,2]))
+
+    # Angles
+    lord, kyph, yj = compute_angles(spine)
+
+    # Normes
+    lord_norm = 40 <= lord <= 60
+    kyph_norm = 27 <= kyph <= 47
+    fl_norm = 2.5 <= fl <= 4.5
+
+    # ================= PLOT =================
+    fig, ax = plt.subplots(figsize=(3,6))
+    ax.scatter(pts[:,2], pts[:,1], s=0.1, alpha=0.05)
+
+    score = np.linspace(0,1,len(spine))
+    plot_curve(ax, spine[:,2], spine[:,1], score)
+
+    ax.axhline(yj, linestyle="--", alpha=0.5)
+    ax.set_title("Projection sagittale")
+    ax.axis("off")
+    st.pyplot(fig)
+
+    # ================= RESULTS =================
+    st.subheader("Résultats")
+
+    st.write(f"Flèche lombaire: **{fl:.2f} cm** → {'Normale' if fl_norm else 'Hors norme'}")
+    st.write(f"Lordose: **{lord:.1f}°** → {'Normale' if lord_norm else 'Hors norme'}")
+    st.write(f"Cyphose: **{kyph:.1f}°** → {'Normale' if kyph_norm else 'Hors norme'}")
+
+    st.write(f"Fiabilité surface: {surface_conf*100:.0f}%")
+    st.write(f"Confiance PSIS: {psis_conf*100:.0f}%")
+    st.write(f"Confiance globale: {global_conf*100:.0f}%")
+
+    if psis_L:
+        st.write(f"PSIS gauche: {psis_L}")
+        st.write(f"PSIS droite: {psis_R}")
