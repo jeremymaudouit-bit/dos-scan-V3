@@ -61,10 +61,13 @@ def export_pdf_pro(patient_info, results, img_f, img_s):
         ["Déviation Latérale Max", f"{results['dev_f']:.2f} cm"],
         ["Angle Lordose Lombaire (est.)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
         ["Angle Cyphose Dorsale (est.)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
-        ["Jonction Thoraco-Lombaire (est.)", f"{results['y_junction']:.1f} cm" if results['y_junction'] is not None else "n/a"],
+        ["Jonction Thoraco-Lombaire (rel.)", results.get("y_junction_rel", "n/a")],
         ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
         ["Confiance PSIS", f"{results['psis_conf']:.0f}%"],
     ]
+
+    if results.get("cobb_enabled", False):
+        data.append(["Angle de Cobb (proxy) (frontale)", f"{results['cobb_deg']:.1f}°"])
 
     t = Table(data, colWidths=[7 * cm, 7 * cm])
     t.setStyle(TableStyle([
@@ -105,7 +108,8 @@ def classify_angle(val_deg, lo, hi):
 # ==============================
 def compute_sagittal_arrow_lombaire_v2(spine_cm):
     """
-    Gardé comme ton code : fl = |z_min - z_max|.
+    Cohérent avec ton historique: fl = |z_min - z_max|.
+    fd est laissé à 0 (si tu veux une vraie fd, dis ta définition exacte).
     """
     y = spine_cm[:, 1]
     z = spine_cm[:, 2]
@@ -199,9 +203,6 @@ def unrotate_spine_xz(spine, R):
 # V3 RASTER SURFACE
 # ==============================
 def build_depth_surface(points, dx=0.5, dy=0.5):
-    """
-    Surface Z(x,y) : max Z par cellule => "surface dos" robuste densité.
-    """
     x, y, z = points[:, 0], points[:, 1], points[:, 2]
 
     xmin, xmax = np.percentile(x, [1, 99])
@@ -218,14 +219,13 @@ def build_depth_surface(points, dx=0.5, dy=0.5):
     valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
     ix, iy, z = ix[valid], iy[valid], z[valid]
 
-    # max z per cell
     for k in range(ix.size):
         gx, gy = ix[k], iy[k]
         v = z[k]
         if np.isnan(grid[gy, gx]) or v > grid[gy, gx]:
             grid[gy, gx] = v
 
-    # fill holes column-wise (simple but effective)
+    # fill holes column-wise
     for col in range(nx):
         col_vals = grid[:, col]
         m = ~np.isnan(col_vals)
@@ -235,10 +235,6 @@ def build_depth_surface(points, dx=0.5, dy=0.5):
     return grid, xmin, ymin, dx, dy
 
 def extract_midline_symmetry_surface(grid, xmin, ymin, dx, dy, edge_q=10):
-    """
-    Midline = milieu entre bords gauche/droit sur chaque ligne Y de la surface.
-    Retourne spine (x,y,z) + meta par point pour fiabilité.
-    """
     ny, nx = grid.shape
     spine = []
     meta = []  # (valid_frac_row, width_cells)
@@ -270,16 +266,10 @@ def extract_midline_symmetry_surface(grid, xmin, ymin, dx, dy, edge_q=10):
 
     spine = np.array(spine, dtype=float)
     meta = np.array(meta, dtype=float)
-
-    # sort by y
     o = np.argsort(spine[:, 1])
     return spine[o], meta[o]
 
 def detect_psis(grid, xmin, ymin, dx, dy):
-    """
-    Détection PSIS (heuristique) : 2 dépressions (minima) dans bande bas du dos.
-    Renvoie (psis_L, psis_R, conf 0..1)
-    """
     ny, nx = grid.shape
     y_low = int(ny * 0.15)
     y_high = int(ny * 0.35)
@@ -288,14 +278,12 @@ def detect_psis(grid, xmin, ymin, dx, dy):
     if np.isnan(band).all():
         return None, None, 0.0
 
-    # depth = median - z (dépression => depth haut)
     med = float(np.nanmedian(band))
     depth = med - band
     flat = depth.ravel()
     if np.all(np.isnan(flat)):
         return None, None, 0.0
 
-    # top candidates
     idx_flat = np.argsort(flat)[-200:]
     ys = (idx_flat // band.shape[1]) + y_low
     xs = (idx_flat % band.shape[1])
@@ -318,47 +306,42 @@ def detect_psis(grid, xmin, ymin, dx, dy):
     psis_L = (float(xmin + lx * dx), float(ymin + ly * dy))
     psis_R = (float(xmin + rx * dx), float(ymin + ry * dy))
 
-    # confidence: séparation + quantité + symétrie grossière
     sep = abs(rx - lx) / max(nx, 1)
     conf = 0.35 + 0.45 * np.clip(sep * 2.0, 0.0, 1.0) + 0.20 * np.clip(xs.size / 200.0, 0.0, 1.0)
     conf = float(np.clip(conf, 0.0, 1.0))
     return psis_L, psis_R, conf
 
-def quality_from_surface(spine, meta, psis_conf=0.0, max_jump_cm=3.0):
-    """
-    Score fiabilité 0..1 par point:
-    - valid_frac_row (plus il y a de surface, mieux c'est)
-    - width plausible (évite les lignes où on n'a que l'épaule/bras)
-    - continuité (jump)
-    - psis_conf (boost global, utile pour suivi)
-    """
-    if spine.shape[0] == 0:
+def quality_from_surface(spine_r, meta, psis_conf=0.0, max_jump_cm=3.0):
+    if spine_r.shape[0] == 0:
         return np.array([], dtype=float)
 
     valid_frac = meta[:, 0]
     width_cells = meta[:, 1]
-    # width score (en cellules): trop petit => mauvais
-    # on convertit en cm approximatif (cells*dx), mais dx connu plus haut ; ici on normalise juste.
-    w = width_cells
-    w_score = np.clip((w - np.percentile(w, 10)) / (np.percentile(w, 90) - np.percentile(w, 10) + 1e-6), 0, 1)
 
-    # continuity score
-    x = spine[:, 0]
+    # width score (robuste)
+    w = width_cells
+    w_p10 = float(np.percentile(w, 10))
+    w_p90 = float(np.percentile(w, 90))
+    w_score = np.clip((w - w_p10) / (w_p90 - w_p10 + 1e-6), 0, 1)
+
+    x = spine_r[:, 0]
     jumps = np.abs(np.diff(x))
     j_score = np.ones_like(x)
     if jumps.size:
         j_seg = np.clip(1.0 - (jumps / max_jump_cm), 0.0, 1.0)
         j_score[1:] = j_seg
 
-    base = 0.45 * np.clip(valid_frac / (np.percentile(valid_frac, 85) + 1e-6), 0, 1) + 0.35 * w_score + 0.20 * j_score
+    v_p85 = float(np.percentile(valid_frac, 85))
+    v_score = np.clip(valid_frac / (v_p85 + 1e-6), 0, 1)
+
+    base = 0.45 * v_score + 0.35 * w_score + 0.20 * j_score
     base = np.clip(base, 0.0, 1.0)
 
-    # PSIS conf boost (global)
     base = np.clip(base * (0.85 + 0.15 * psis_conf), 0.0, 1.0)
     return base.astype(float)
 
 # ==============================
-# ANGLES V2 (concavité/convexité + tangentes)
+# ANGLES V2 (concavité/convexité + tangentes) — SAGITTAL z(y)
 # ==============================
 def estimate_lordosis_kyphosis_angles_v2(spine, smooth_win=21):
     if spine.shape[0] < 25:
@@ -377,7 +360,6 @@ def estimate_lordosis_kyphosis_angles_v2(spine, smooth_win=21):
     w = max(7, w)
 
     z_s = savgol_filter(z, w, 3)
-
     dz = np.gradient(z_s, y)
     d2z = np.gradient(dz, y)
 
@@ -392,10 +374,9 @@ def estimate_lordosis_kyphosis_angles_v2(spine, smooth_win=21):
     sign_low = np.sign(np.median(low))
     sign_high = np.sign(np.median(high))
     if (sign_low < 0 and sign_high > 0):
-        d2z = -d2z
         dz = -dz
+        d2z = -d2z
 
-    # jonction = proche inflexion au centre
     y_mid_lo = np.percentile(y, 35)
     y_mid_hi = np.percentile(y, 65)
     mid_mask = (y >= y_mid_lo) & (y <= y_mid_hi)
@@ -425,6 +406,53 @@ def estimate_lordosis_kyphosis_angles_v2(spine, smooth_win=21):
         y_j = y_j_fb
 
     return lordosis, kyphosis, y_j
+
+# ==============================
+# COBB ANGLE (proxy) — FRONTAL x(y)
+# ==============================
+def estimate_cobb_proxy_front(spine, smooth_win=21):
+    """
+    Proxy Cobb-like: angle between upper & lower tangent lines on frontal curve x(y).
+    Not a true radiographic Cobb, but useful for FOLLOW-UP if protocol is consistent.
+    """
+    if spine.shape[0] < 30:
+        return 0.0
+
+    s = spine[np.argsort(spine[:, 1])]
+    y = s[:, 1].astype(float)
+    x = s[:, 0].astype(float)
+
+    n = len(x)
+    w = int(smooth_win)
+    if w % 2 == 0:
+        w += 1
+    if w >= n:
+        w = n - 1 if (n - 1) % 2 == 1 else n - 2
+    w = max(7, w)
+
+    x_s = savgol_filter(x, w, 3)
+
+    # Use top/bottom 20% to fit tangents
+    y10, y30, y70, y90 = np.percentile(y, [10, 30, 70, 90])
+    m_bot = (y >= y10) & (y <= y30)
+    m_top = (y >= y70) & (y <= y90)
+
+    if np.count_nonzero(m_bot) < 6 or np.count_nonzero(m_top) < 6:
+        return 0.0
+
+    # Fit x = a*y + b
+    a_bot = np.polyfit(y[m_bot], x_s[m_bot], 1)[0]
+    a_top = np.polyfit(y[m_top], x_s[m_top], 1)[0]
+
+    # angle between lines with slopes a1, a2 (in x vs y)
+    # angle = arctan(|(a2-a1)/(1+a1*a2)|)
+    denom = (1.0 + a_bot * a_top)
+    if abs(denom) < 1e-9:
+        ang = np.pi / 2
+    else:
+        ang = np.arctan(abs((a_top - a_bot) / denom))
+
+    return float(np.degrees(ang))
 
 # ==============================
 # PLOT COLORED CURVE
@@ -469,6 +497,11 @@ with st.sidebar:
     st.divider()
     st.subheader("📐 Angles")
     angle_smooth = st.slider("Lissage angles (fenêtre)", 7, 41, 21, step=2)
+
+    st.divider()
+    st.subheader("📐 Cobb (proxy) — optionnel")
+    cobb_enabled = st.toggle("Afficher angle de Cobb (proxy)", False)
+    cobb_smooth = st.slider("Lissage Cobb (fenêtre)", 7, 41, 21, step=2)
 
     st.divider()
     st.subheader("📏 Normes")
@@ -524,7 +557,6 @@ if ply_file:
         # ---- metrics ----
         fd, fl, vertical_z = compute_sagittal_arrow_lombaire_v2(spine)
         fl_status = classify_fl(fl, fl_lo, fl_hi)
-
         dev_f = float(np.max(np.abs(spine[:, 0]))) if spine.size else 0.0
 
         # angles V2 (concavité/convexité)
@@ -532,12 +564,23 @@ if ply_file:
         lordosis_status = classify_angle(lordosis_deg, lord_lo, lord_hi)
         kyphosis_status = classify_angle(kyphosis_deg, kyph_lo, kyph_hi)
 
+        # Cobb proxy (frontale) optionnel
+        cobb_deg = None
+        if cobb_enabled:
+            cobb_deg = estimate_cobb_proxy_front(spine, smooth_win=int(cobb_smooth))
+
         # coverage / reliability
         y_span_pts = float(np.percentile(pts[:, 1], 98) - np.percentile(pts[:, 1], 2))
         y_span_sp = float(np.max(spine[:, 1]) - np.min(spine[:, 1]))
         coverage_pct = 100.0 * (y_span_sp / y_span_pts) if y_span_pts > 1e-6 else 0.0
+        coverage_pct = float(np.clip(coverage_pct, 0.0, 100.0))  # FIX: évite 102%
         reliability_pct = 100.0 * float(np.mean(q >= 0.6)) if q.size else 0.0
         psis_pct = 100.0 * float(psis_conf)
+
+        # FIX: jonction affichée en "Y relative"
+        y0 = float(np.min(spine[:, 1]))
+        y_junction_rel = None if y_junction is None else float(y_junction - y0)
+        y_junction_disp = "n/a" if y_junction_rel is None else f"{y_junction_rel:.1f} cm"
 
         # ---- figures ----
         tmp = tempfile.gettempdir()
@@ -559,8 +602,6 @@ if ply_file:
             ax_s.plot(vertical_z, spine[:, 1], "k--", alpha=0.7, linewidth=1)
         if y_junction is not None:
             ax_s.axhline(y_junction, linestyle="--", linewidth=1, alpha=0.6)
-
-        # PSIS markers (projected on sagittal not meaningful; show only as text; optional overlay in frontal)
         ax_s.set_title("Sagittale (couleur = fiabilité)", fontsize=9)
         ax_s.axis("off")
         fig_s.savefig(img_s_p, bbox_inches="tight", dpi=170)
@@ -580,7 +621,10 @@ if ply_file:
         st.pyplot(fig_leg)
 
         if psis_L is not None:
-            st.caption(f"PSIS détectées (confiance {psis_pct:.0f}%) — gauche: {psis_L[0]:.1f},{psis_L[1]:.1f} cm | droite: {psis_R[0]:.1f},{psis_R[1]:.1f} cm")
+            st.caption(
+                f"PSIS détectées (confiance {psis_pct:.0f}%) — "
+                f"gauche: {psis_L[0]:.1f},{psis_L[1]:.1f} cm | droite: {psis_R[0]:.1f},{psis_R[1]:.1f} cm"
+            )
         else:
             st.caption(f"PSIS non détectées (confiance {psis_pct:.0f}%)")
 
@@ -588,8 +632,17 @@ if ply_file:
         badge_lord = '<span class="badge-ok">Normale</span>' if lordosis_status == "Normale" else '<span class="badge-no">Hors norme</span>'
         badge_kyph = '<span class="badge-ok">Normale</span>' if kyphosis_status == "Normale" else '<span class="badge-no">Hors norme</span>'
 
+        cobb_line = ""
+        if cobb_enabled and cobb_deg is not None:
+            cobb_line = f"""
+            <p><b>📐 Angle de Cobb (proxy) :</b> <span class="value-text">{cobb_deg:.1f}°</span>
+               <br><span class="small">Proxy de suivi (frontale), pas un Cobb radiographique.</span></p>
+            """
+
         st.write("### 📋 Synthèse des résultats")
-        st.markdown(f"""
+
+        # IMPORTANT FIX: on force le rendu HTML via st.markdown(unsafe_allow_html=True)
+        html = f"""
         <div class="result-box">
             <p><b>📏 Flèche Dorsale :</b> <span class="value-text">{fd:.2f} cm</span></p>
 
@@ -607,18 +660,21 @@ if ply_file:
                {"&nbsp; " + badge_kyph if show_norms else ""}
                {"<br><span class='small'>Référence: 27° à 47°</span>" if show_norms else ""}</p>
 
-            <p><b>🔁 Jonction thoraco-lombaire (est.) :</b> <span class="value-text">{(f"{y_junction:.1f} cm" if y_junction is not None else "n/a")}</span></p>
+            {cobb_line}
+
+            <p><b>🔁 Jonction thoraco-lombaire (rel.) :</b> <span class="value-text">{y_junction_disp}</span></p>
 
             <p><b>✅ Couverture hauteur :</b> <span class="value-text">{coverage_pct:.0f}%</span>
                &nbsp; <b>Fiabilité :</b> <span class="value-text">{reliability_pct:.0f}%</span>
                <br><span class="small">Fiabilité = % des points avec score ≥ 0.60 | Confiance PSIS = {psis_pct:.0f}%</span></p>
 
             <div class="disclaimer">
-                V3 “Rasterstéréographie”: surface Z(x,y) = max Z par cellule (anti-biais densité) + midline par symétrie.
+                V3 “Rasterstéréographie”: surface Z(x,y) = max Z par cellule (anti-biais densité) + midline par symétrie.<br>
                 Angles V2 = plan sagittal via concavité/convexité (z''(y)) + différence de tangentes.
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
+        st.markdown(html, unsafe_allow_html=True)
 
         # ---- PDF ----
         res = {
@@ -630,11 +686,14 @@ if ply_file:
             "kyphosis_deg": float(kyphosis_deg),
             "lordosis_status": lordosis_status,
             "kyphosis_status": kyphosis_status,
-            "y_junction": None if y_junction is None else float(y_junction),
+            "y_junction_rel": y_junction_disp,
             "coverage_pct": float(coverage_pct),
             "reliability_pct": float(reliability_pct),
             "psis_conf": float(psis_pct),
+            "cobb_enabled": bool(cobb_enabled),
+            "cobb_deg": float(cobb_deg) if (cobb_enabled and cobb_deg is not None) else 0.0,
         }
+
         pdf_path = export_pdf_pro({"nom": nom, "prenom": prenom}, res, img_f_p, img_s_p)
 
         st.divider()
