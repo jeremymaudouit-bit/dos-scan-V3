@@ -1,7 +1,0 @@
-streamlit
-numpy
-scipy
-matplotlib
-reportlab
-plyfile
-Pillow
