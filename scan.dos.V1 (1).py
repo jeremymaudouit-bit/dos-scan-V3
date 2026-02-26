@@ -59,85 +59,37 @@ import tempfile
 def export_pdf_super(patient_info, results, img_front_path, img_sag_path, img_asym_path=None):
     tmp = tempfile.gettempdir()
     path = os.path.join(tmp, f"Rapport_SpineScan_{patient_info['nom']}.pdf")
-    doc = SimpleDocTemplate(path, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
+    doc = SimpleDocTemplate(
+        path, pagesize=A4,
+        rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm
+    )
 
     styles = getSampleStyleSheet()
-    
+
     # --- Styles Personnalisés ---
     title_style = ParagraphStyle(
-        "TitleStyle", fontSize=18, textColor=colors.HexColor("#2C3E50"), 
+        "TitleStyle", fontSize=18, textColor=colors.HexColor("#2C3E50"),
         alignment=1, spaceAfter=10, fontName="Helvetica-Bold"
     )
     subtitle_style = ParagraphStyle(
-        "SubTitle", fontSize=12, textColor=colors.HexColor("#34495E"), 
+        "SubTitle", fontSize=12, textColor=colors.HexColor("#34495E"),
         spaceBefore=10, spaceAfter=10, fontName="Helvetica-Bold"
     )
 
     story = []
 
-    # 1. En-tête (Titre + Patient)
+    # 1. En-tête
     story.append(Paragraph("RAPPORT D'ANALYSE SPINESCAN SUPER", title_style))
     story.append(Spacer(1, 0.2 * cm))
-    
+
     patient_line = f"<b>Patient :</b> {patient_info['prenom']} {patient_info['nom']} <br/><b>Date :</b> 26/02/2026"
     story.append(Paragraph(patient_line, styles["Normal"]))
     story.append(Spacer(1, 0.8 * cm))
 
-    # 2. Tableau de données stylisé
+    # 2. Tableau
     story.append(Paragraph("Résultats de l'Analyse", subtitle_style))
-    
-    # On prépare les lignes du tableau
-    data = [
-        [Paragraph("<b>Indicateur</b>", styles["Normal"]), Paragraph("<b>Valeur / Statut</b>", styles["Normal"])],
-        ["Flèche lombaire", f"{results['fl']:.2f} cm ({results['fl_status']})"],
-        ["Déviation latérale max", f"{results['dev_f']:.2f} cm"],
-        ["Lordose (est.)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
-        ["Cyphose (est.)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
-        ["Jonction TL (rel.)", results["y_junction_rel"]],
-        ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
-    ]
 
-    # Création du tableau avec ReportLab
-    table = Table(data, colWidths=[8*cm, 8*cm])
-    
-    # Style du tableau (Bordures, Couleurs alternées, Police)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")), # En-tête bleu foncé
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#F2F4F4")), # Fond gris clair
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]), # Zebra stripes
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
-    ]))
-    
-    story.append(table)
-    story.append(Spacer(1, 1 * cm))
-
-    # 3. Images (Vues Sagittale et Frontale côte à côte)
-    story.append(Paragraph("Clichés d'Analyse", subtitle_style))
-    
-    try:
-        # On redimensionne les images pour qu'elles rentrent sur la page
-        img_f = Image(img_front_path, width=7*cm, height=9*cm, kind='proportional')
-        img_s = Image(img_sag_path, width=7*cm, height=9*cm, kind='proportional')
-        
-        # Tableau pour mettre les images côte à côte
-        img_table = Table([[img_f, img_s]], colWidths=[8.5*cm, 8.5*cm])
-        img_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
-        story.append(img_table)
-    except Exception as e:
-        story.append(Paragraph(f"Erreur chargement images : {e}", styles["Normal"]))
-
-    # Génération finale
-    doc.build(story)
-    return path
-    # ✅ Ajout courbures frontales si activées
-    if results.get("front_curv_enabled", False):
-            # --- Helpers robustes (n/a si absent) ---
+    # Helpers robustes
     def fmt_deg(key):
         v = results.get(key, None)
         return "n/a" if v is None else f"{float(v):.1f}°"
@@ -157,7 +109,7 @@ def export_pdf_super(patient_info, results, img_front_path, img_sag_path, img_as
         ["Angle courbure frontale lombaire", fmt_deg("front_angle_lomb_deg")],
         ["Angle courbure frontale dorsale", fmt_deg("front_angle_thor_deg")],
 
-        # (Optionnel) ✅ indices de courbure frontale (κ)
+        # (Optionnel) κ si tu veux aussi le mettre dans le PDF
         # ["Courbure frontale lombaire (peak |κ|)", fmt_kappa("front_kappa_peak_lomb")],
         # ["Courbure frontale lombaire (RMS κ)", fmt_kappa("front_kappa_rms_lomb")],
         # ["Courbure frontale dorsale (peak |κ|)", fmt_kappa("front_kappa_peak_thor")],
@@ -167,43 +119,35 @@ def export_pdf_super(patient_info, results, img_front_path, img_sag_path, img_as
         ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
     ]
 
-    t = Table(data, colWidths=[7.5 * cm, 7.5 * cm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
+    table = Table(data, colWidths=[8*cm, 8*cm])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#F2F4F4")),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
     ]))
-    story.append(t)
-    story.append(Spacer(1, 0.35 * cm))
-    story.append(Paragraph("Graphiques", sub_s))
-    story.append(Spacer(1, 0.2 * cm))
+    story.append(table)
+    story.append(Spacer(1, 1 * cm))
 
-    row = [PDFImage(img_front, width=6.6*cm, height=9.2*cm),
-           PDFImage(img_sag, width=6.6*cm, height=9.2*cm)]
-    story.append(Table([row], colWidths=[7.5*cm, 7.5*cm]))
-    story.append(Spacer(1, 0.25 * cm))
-
-    if img_asym is not None and os.path.exists(img_asym):
-        story.append(Paragraph("Carte d’asymétrie (option)", sub_s))
-        story.append(Spacer(1, 0.2 * cm))
-        story.append(PDFImage(img_asym, width=14.5*cm, height=6.0*cm))
-
-    story.append(Spacer(1, 0.25 * cm))
-    story.append(Paragraph(
-        "Note: les flèches sagittales sont mesurées vs une droite de référence z(y) robuste. "
-        "Les angles lordose/cyphose sont estimés dans le plan sagittal via concavité/convexité et tangentes. "
-        "Les courbures frontales (κ) sont calculées sur la courbe x(y) : κ = x''/(1+x'^2)^(3/2). "
-        "Les angles de courbure frontale sont calculés comme la différence de tangentes aux bornes de la zone de courbure.",
-        styles["Normal"]
-    ))
+    # 3. Images
+    story.append(Paragraph("Clichés d'Analyse", subtitle_style))
+    try:
+        img_f = Image(img_front_path, width=7*cm, height=9*cm, kind='proportional')
+        img_s = Image(img_sag_path, width=7*cm, height=9*cm, kind='proportional')
+        img_table = Table([[img_f, img_s]], colWidths=[8.5*cm, 8.5*cm])
+        img_table.setStyle(TableStyle([('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
+        story.append(img_table)
+    except Exception as e:
+        story.append(Paragraph(f"Erreur chargement images : {e}", styles["Normal"]))
 
     doc.build(story)
     return path
-
 # ==============================
 # UTILITAIRES (anti-biais densité)
 # (INCHANGE)
@@ -1163,6 +1107,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     st.divider()
     with open(pdf_path, "rb") as f:
         st.download_button("📥 Télécharger le rapport PDF", f, f"Rapport_SpineScan_SUPER_{nom}.pdf")
+
 
 
 
