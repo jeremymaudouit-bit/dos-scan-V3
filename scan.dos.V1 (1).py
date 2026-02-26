@@ -137,14 +137,35 @@ def export_pdf_super(patient_info, results, img_front_path, img_sag_path, img_as
     return path
     # ✅ Ajout courbures frontales si activées
     if results.get("front_curv_enabled", False):
-        data += [
-            ["Courbure frontale lombaire (peak |κ|)", f"{results['front_kappa_peak_lomb']:.4f} 1/cm"],
-            ["Courbure frontale lombaire (RMS κ)", f"{results['front_kappa_rms_lomb']:.4f} 1/cm"],
-            ["Angle courbure frontale lombaire", f"{results['front_angle_lomb_deg']:.1f}°"],
-            ["Courbure frontale dorsale (peak |κ|)", f"{results['front_kappa_peak_thor']:.4f} 1/cm"],
-            ["Courbure frontale dorsale (RMS κ)", f"{results['front_kappa_rms_thor']:.4f} 1/cm"],
-            ["Angle courbure frontale dorsale", f"{results['front_angle_thor_deg']:.1f}°"],
-        ]
+            # --- Helpers robustes (n/a si absent) ---
+    def fmt_deg(key):
+        v = results.get(key, None)
+        return "n/a" if v is None else f"{float(v):.1f}°"
+
+    def fmt_kappa(key):
+        v = results.get(key, None)
+        return "n/a" if v is None else f"{float(v):.4f} 1/cm"
+
+    data = [
+        [Paragraph("<b>Indicateur</b>", styles["Normal"]), Paragraph("<b>Valeur / Statut</b>", styles["Normal"])],
+        ["Flèche lombaire", f"{results['fl']:.2f} cm ({results['fl_status']})"],
+        ["Déviation latérale max", f"{results['dev_f']:.2f} cm"],
+        ["Lordose (est.)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
+        ["Cyphose (est.)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
+
+        # ✅ AJOUT : angles de courbure frontale
+        ["Angle courbure frontale lombaire", fmt_deg("front_angle_lomb_deg")],
+        ["Angle courbure frontale dorsale", fmt_deg("front_angle_thor_deg")],
+
+        # (Optionnel) ✅ indices de courbure frontale (κ)
+        # ["Courbure frontale lombaire (peak |κ|)", fmt_kappa("front_kappa_peak_lomb")],
+        # ["Courbure frontale lombaire (RMS κ)", fmt_kappa("front_kappa_rms_lomb")],
+        # ["Courbure frontale dorsale (peak |κ|)", fmt_kappa("front_kappa_peak_thor")],
+        # ["Courbure frontale dorsale (RMS κ)", fmt_kappa("front_kappa_rms_thor")],
+
+        ["Jonction TL (rel.)", results["y_junction_rel"]],
+        ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
+    ]
 
     t = Table(data, colWidths=[7.5 * cm, 7.5 * cm])
     t.setStyle(TableStyle([
@@ -1142,6 +1163,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     st.divider()
     with open(pdf_path, "rb") as f:
         st.download_button("📥 Télécharger le rapport PDF", f, f"Rapport_SpineScan_SUPER_{nom}.pdf")
+
 
 
 
