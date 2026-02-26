@@ -928,8 +928,11 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     ax_s.scatter(pts[:, 2], pts[:, 1], s=0.2, alpha=0.07, color="gray")
     plot_colored_curve(ax_s, z_sorted, y_sorted, q, lw=3.0)
 
-    if z_ref.size:
-        ax_s.plot(z_ref, y_sorted, "k--", alpha=0.75, linewidth=1.4)
+    # ✅ Vraie verticale tangentielle collée au dorsal
+    ax_s.axvline(z_tan, linestyle="--", linewidth=1.6, alpha=0.85)
+
+    # Optionnel: matérialiser la zone dorsale utilisée pour la tangence (barre légère)
+    ax_s.plot([z_tan, z_tan], [y_tan0, y_tan1], linestyle="--", linewidth=4.0, alpha=0.15)
 
     if y_junction is not None:
         ax_s.axhline(y_junction, linestyle="--", linewidth=1.4, alpha=0.6)
@@ -1079,5 +1082,6 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     st.divider()
     with open(pdf_path, "rb") as f:
         st.download_button("📥 Télécharger le rapport PDF", f, f"Rapport_SpineScan_SUPER_{nom}.pdf")
+
 
 
