@@ -1,13 +1,11 @@
 # ==============================
-# SpineScan SUPER (Revopoint) — V3.5
-# FIXES (selon ta demande exacte) :
-# ✅ Verticale = vraie verticale z=const, placée en tangence au dos (zone dorsale)
-# ✅ Flèche lombaire = max(z_tan - z) sur zone lombaire (distance à la verticale tangentielle)
-# ✅ Plus de "flèche dorsale"
-# ✅ Angles Lordose/Cyphose = angle de courbure (concavité lombaire / convexité dorsale)
-#    via courbure κ(y) + bornes (inflexions ou seuil) + différence de tangentes.
-# ✅ Axe vertical configurable (AUTO / X / Y / Z) + remapping cohérent
-# + UI + PDF + Fiabilité + Cobb proxy optionnel + Asymétrie optionnelle
+# SpineScan SUPER (Revopoint) — V3.2 + (Front Curvature)
+# AJOUT (sans modifier les autres fonctions) :
+# ✅ Mesure de courbure frontale lombaire & dorsale sur x(y)
+#    - kappa_peak (1/cm), kappa_rms (1/cm), angle_courbure (°)
+# ✅ UI + Synthèse + PDF : remplace (optionnellement) le Cobb proxy par ces mesures
+# ⚠️ Toutes les fonctions existantes sont conservées INCHANGÉES.
+#     -> On ajoute seulement de nouvelles fonctions + on modifie l'UI / résultats / PDF.
 # ==============================
 
 import streamlit as st
@@ -48,7 +46,7 @@ def load_ply_numpy(file):
     return np.vstack([v["x"], v["y"], v["z"]]).T.astype(float)
 
 # ==============================
-# PDF
+# PDF (MODIF : ajout courbures frontales)
 # ==============================
 def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
     tmp = tempfile.gettempdir()
@@ -60,24 +58,33 @@ def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
     sub_s = ParagraphStyle("Sub", fontSize=10, textColor=colors.HexColor("#2c3e50"))
 
     story = []
-    story.append(Paragraph("<b>RAPPORT SPINESCAN SUPER (V3.5)</b>", header_s))
+    story.append(Paragraph("<b>RAPPORT SPINESCAN SUPER (V3.2 + Courbures frontales)</b>", header_s))
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph(f"<b>Patient :</b> {patient_info['prenom']} {patient_info['nom']}", styles["Normal"]))
     story.append(Spacer(1, 0.3 * cm))
 
     data = [
         ["Indicateur", "Valeur"],
-        ["Flèche lombaire (vs verticale tangentielle)", f"{results['fl']:.2f} cm ({results['fl_status']})"],
+        ["Flèche lombaire (robuste)", f"{results['fl']:.2f} cm ({results['fl_status']})"],
+        ["Flèche dorsale (robuste)", f"{results['fd']:.2f} cm"],
         ["Déviation latérale max", f"{results['dev_f']:.2f} cm"],
-        ["Lordose (courbure concave)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
-        ["Cyphose (courbure convexe)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
-        ["Verticale tangentielle (dorsale)", f"z_tan={results['z_tan']:.2f} cm (zone {results['tan_zone_label']})"],
-        ["Axe vertical utilisé", results["up_axis_used"]],
+        ["Lordose (est.)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
+        ["Cyphose (est.)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
+        ["Jonction TL (rel.)", results["y_junction_rel"]],
         ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
         ["Confiance PSIS", f"{results['psis_pct']:.0f}%"],
     ]
-    if results.get("cobb_enabled", False):
-        data.append(["Angle Cobb (proxy) (frontale)", f"{results['cobb_deg']:.1f}°"])
+
+    # ✅ Ajout courbures frontales si activées
+    if results.get("front_curv_enabled", False):
+        data += [
+            ["Courbure frontale lombaire (peak |κ|)", f"{results['front_kappa_peak_lomb']:.4f} 1/cm"],
+            ["Courbure frontale lombaire (RMS κ)", f"{results['front_kappa_rms_lomb']:.4f} 1/cm"],
+            ["Angle courbure frontale lombaire", f"{results['front_angle_lomb_deg']:.1f}°"],
+            ["Courbure frontale dorsale (peak |κ|)", f"{results['front_kappa_peak_thor']:.4f} 1/cm"],
+            ["Courbure frontale dorsale (RMS κ)", f"{results['front_kappa_rms_thor']:.4f} 1/cm"],
+            ["Angle courbure frontale dorsale", f"{results['front_angle_thor_deg']:.1f}°"],
+        ]
 
     t = Table(data, colWidths=[7.5 * cm, 7.5 * cm])
     t.setStyle(TableStyle([
@@ -106,11 +113,10 @@ def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
 
     story.append(Spacer(1, 0.25 * cm))
     story.append(Paragraph(
-        "Note : la référence sagittale est une <b>verticale</b> (z=const) placée <b>en tangence au dos</b> "
-        "dans la zone dorsale (z_tan). La flèche lombaire est la distance maximale entre cette verticale tangentielle "
-        "et le profil lombaire. Les angles lordose/cyphose sont estimés comme des <b>angles de courbure</b> : "
-        "on calcule la courbure κ(y), on détecte la zone concave (lombaire) / convexe (dorsale), puis l’angle est la "
-        "différence de tangentes aux bornes (inflexions ou seuil). L’angle de Cobb est un proxy de suivi (non radiographique).",
+        "Note: les flèches sagittales sont mesurées vs une droite de référence z(y) robuste. "
+        "Les angles lordose/cyphose sont estimés dans le plan sagittal via concavité/convexité et tangentes. "
+        "Les courbures frontales (κ) sont calculées sur la courbe x(y) : κ = x''/(1+x'^2)^(3/2). "
+        "Les angles de courbure frontale sont calculés comme la différence de tangentes aux bornes de la zone de courbure.",
         styles["Normal"]
     ))
 
@@ -118,7 +124,8 @@ def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
     return path
 
 # ==============================
-# UTILITAIRES
+# UTILITAIRES (anti-biais densité)
+# (INCHANGE)
 # ==============================
 def median_filter_1d(a, k):
     a = np.asarray(a, dtype=float)
@@ -168,31 +175,8 @@ def smooth_spine(spine, window=91, strong=True, median_k=11):
     return out
 
 # ==============================
-# AXE VERTICAL — AUTO + REMAP
-# ==============================
-def infer_up_axis(pts):
-    spans = [
-        np.percentile(pts[:, 0], 99) - np.percentile(pts[:, 0], 1),
-        np.percentile(pts[:, 1], 99) - np.percentile(pts[:, 1], 1),
-        np.percentile(pts[:, 2], 99) - np.percentile(pts[:, 2], 1),
-    ]
-    return int(np.argmax(spans))
-
-def remap_to_work_axes(pts, up_axis):
-    """
-    Repère de travail:
-      X = gauche/droite
-      Y = vertical (hauteur)
-      Z = profondeur (sagittal)
-    """
-    if up_axis == 1:
-        return pts.copy(), "Y"
-    if up_axis == 2:
-        return pts[:, [0, 2, 1]].copy(), "Z"
-    return pts[:, [1, 0, 2]].copy(), "X"
-
-# ==============================
 # ROTATION CORRECTION (XZ)
+# (INCHANGE)
 # ==============================
 def estimate_rotation_xz(pts):
     y = pts[:, 1]
@@ -218,8 +202,12 @@ def unrotate_spine_xz(spine, R):
 
 # ==============================
 # V3 SURFACE (Rasterstéréographie)
+# (INCHANGE)
 # ==============================
 def build_depth_surface(points, dx=0.5, dy=0.5):
+    """
+    Surface Z(x,y) : max Z par cellule => robuste densité/temps de scan.
+    """
     x, y, z = points[:, 0], points[:, 1], points[:, 2]
     xmin, xmax = np.percentile(x, [1, 99])
     ymin, ymax = np.percentile(y, [1, 99])
@@ -249,6 +237,9 @@ def build_depth_surface(points, dx=0.5, dy=0.5):
     return grid, xmin, ymin, dx, dy
 
 def extract_midline_symmetry_surface(grid, xmin, ymin, dx, dy, edge_q=10):
+    """
+    Midline = milieu entre bords gauche/droit sur chaque Y.
+    """
     ny, nx = grid.shape
     spine = []
     meta = []
@@ -284,6 +275,9 @@ def extract_midline_symmetry_surface(grid, xmin, ymin, dx, dy, edge_q=10):
     return spine[o], meta[o]
 
 def detect_psis(grid, xmin, ymin, dx, dy):
+    """
+    Heuristique PSIS: 2 dépressions (minima) dans bande bas du dos.
+    """
     ny, nx = grid.shape
     y_low = int(ny * 0.15)
     y_high = int(ny * 0.35)
@@ -350,84 +344,93 @@ def quality_from_surface(spine_r, meta, psis_conf=0.0, max_jump_cm=3.0):
     return base.astype(float)
 
 # ==============================
-# SAGITTAL: verticale tangentielle + flèche lombaire
+# SAGITTAL "VERTICALE" + FLECHES (INCHANGE)
 # ==============================
-def tangent_vertical_z(spine, frac=(0.65, 0.92), q=98.0):
+def robust_line_z_of_y(spine, yq_low=8, yq_high=92, nbins=70):
     """
-    Verticale tangentielle au dos (zone dorsale):
-      z_tan = quantile élevé de z dans la zone dorsale (presque "max" arrière).
-    Return: z_tan, y0, y1
+    Ajuste une droite z = a*y + b sur points robustifiés (médiane par bin Y).
+    => pas de biais densité et plus stable aux outliers.
+    """
+    s = spine[np.argsort(spine[:, 1])]
+    y = s[:, 1].astype(float)
+    z = s[:, 2].astype(float)
+
+    y0, y1 = np.percentile(y, [yq_low, yq_high])
+    m = (y >= y0) & (y <= y1)
+    y, z = y[m], z[m]
+    if y.size < 10:
+        return 0.0, float(np.median(z))
+
+    edges = np.linspace(y0, y1, nbins + 1)
+    yc, zc = [], []
+    for i in range(nbins):
+        mm = (y >= edges[i]) & (y < edges[i + 1])
+        if np.count_nonzero(mm) < 3:
+            continue
+        yc.append(0.5 * (edges[i] + edges[i + 1]))
+        zc.append(float(np.median(z[mm])))
+
+    if len(yc) < 6:
+        return 0.0, float(np.median(z))
+
+    yc = np.array(yc)
+    zc = np.array(zc)
+    a, b = np.polyfit(yc, zc, 1)
+    return float(a), float(b)
+
+def compute_sagittal_arrows_v3(spine, lordose_frac=(0.08, 0.45), kyphose_frac=(0.55, 0.92)):
+    """
+    Référence sagittale: z_ref(y)=a*y+b (robuste).
+    Flèche lombaire: max |z - z_ref| sur zone basse.
+    Flèche dorsale : max |z - z_ref| sur zone haute.
     """
     s = spine[np.argsort(spine[:, 1])]
     y = s[:, 1].astype(float)
     z = s[:, 2].astype(float)
     if y.size < 20:
-        return float(np.median(z)) if z.size else 0.0, float(y.min()) if y.size else 0.0, float(y.max()) if y.size else 1.0
+        return 0.0, 0.0, np.array([]), np.array([])
 
-    y_min, y_max = float(y.min()), float(y.max())
-    span = max(1e-6, y_max - y_min)
-    y0 = y_min + frac[0] * span
-    y1 = y_min + frac[1] * span
-    m = (y >= y0) & (y <= y1)
-    if np.count_nonzero(m) < 8:
-        # fallback: top 25%
-        y0 = y_min + 0.75 * span
-        y1 = y_max
-        m = (y >= y0) & (y <= y1)
-    zz = z[m] if np.count_nonzero(m) else z
-    z_tan = float(np.percentile(zz, q)) if zz.size else 0.0
-    return z_tan, float(y0), float(y1)
+    a, b = robust_line_z_of_y(s, yq_low=8, yq_high=92, nbins=70)
+    z_ref = a * y + b
+    z_dev = z - z_ref
 
-def lumbar_arrow_vs_tangent_vertical(spine, z_tan, frac=(0.12, 0.45)):
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    span = (y_max - y_min) if (y_max > y_min) else 1.0
+
+    lo0 = y_min + lordose_frac[0] * span
+    lo1 = y_min + lordose_frac[1] * span
+    th0 = y_min + kyphose_frac[0] * span
+    th1 = y_min + kyphose_frac[1] * span
+
+    m_lomb = (y >= lo0) & (y <= lo1)
+    m_thor = (y >= th0) & (y <= th1)
+
+    fl = float(np.max(np.abs(z_dev[m_lomb]))) if np.count_nonzero(m_lomb) >= 5 else 0.0
+    fd = float(np.max(np.abs(z_dev[m_thor]))) if np.count_nonzero(m_thor) >= 5 else 0.0
+
+    return fd, fl, z_ref, z_dev
+
+# ==============================
+# MESURES / ANGLES (INCHANGE)
+# ==============================
+def classify_range(val, lo, hi):
+    if val < lo:
+        return "Trop faible"
+    if val > hi:
+        return "Trop élevée"
+    return "Normale"
+
+def estimate_lordosis_kyphosis_angles_v2(spine, smooth_win=21):
     """
-    Flèche lombaire = max(z_tan - z(y)) sur la zone lombaire.
-    (Suppose Z augmente vers l'arrière; si l'orientation est inversée, on prendra abs)
+    Plan sagittal : concavité basse = lombaire, convexité haute = dorsale.
+    Angle = différence de tangentes.
     """
+    if spine.shape[0] < 25:
+        return 0.0, 0.0, None
+
     s = spine[np.argsort(spine[:, 1])]
     y = s[:, 1].astype(float)
     z = s[:, 2].astype(float)
-    if y.size < 20:
-        return 0.0
-
-    y_min, y_max = float(y.min()), float(y.max())
-    span = max(1e-6, y_max - y_min)
-    y0 = y_min + frac[0] * span
-    y1 = y_min + frac[1] * span
-    m = (y >= y0) & (y <= y1)
-    if np.count_nonzero(m) < 8:
-        return 0.0
-
-    d = (z_tan - z[m])
-    # robust: si orientation z inversée, d peut être négatif -> on prend max de |d|
-    fl = float(np.max(d))
-    if fl < 0:
-        fl = float(np.max(np.abs(d)))
-    return fl
-
-# ==============================
-# ANGLES par courbure (concavité lombaire / convexité dorsale)
-# ==============================
-def curvature_angles(spine, smooth_win=21,
-                     lord_frac=(0.12, 0.45), kyph_frac=(0.55, 0.90),
-                     threshold_ratio=0.20):
-    """
-    Retourne:
-      lord_deg, kyph_deg,
-      indices bornes (iL,iR) pour lordose & cyphose (pour debug/plot)
-    Méthode:
-      - lisse z(y)
-      - calcule dz, d2z, courbure κ = d2z / (1+dz^2)^(3/2)
-      - dans zone lombaire : on prend le pic concave (min κ ou max |κ| du signe concave)
-      - dans zone dorsale : pic convexe (max κ)
-      - bornes = inflexions κ=0 autour du pic, sinon seuil |κ| < ratio*|κ_peak|
-      - angle = |atan(dz[iR]) - atan(dz[iL])|
-    """
-    s = spine[np.argsort(spine[:, 1])]
-    y = s[:, 1].astype(float)
-    z = s[:, 2].astype(float)
-
-    if y.size < 35:
-        return 0.0, 0.0, None, None, None, None
 
     n = len(z)
     w = int(smooth_win)
@@ -435,120 +438,55 @@ def curvature_angles(spine, smooth_win=21,
         w += 1
     if w >= n:
         w = n - 1 if (n - 1) % 2 == 1 else n - 2
-    w = max(9, w)
+    w = max(7, w)
 
     z_s = savgol_filter(z, w, 3)
     dz = np.gradient(z_s, y)
     d2z = np.gradient(dz, y)
-    kappa = d2z / np.power(1.0 + dz * dz, 1.5)
 
-    y_min, y_max = float(y.min()), float(y.max())
-    span = max(1e-6, y_max - y_min)
+    y20 = np.percentile(y, 20)
+    y80 = np.percentile(y, 80)
+    low = d2z[y <= y20]
+    high = d2z[y >= y80]
+    if low.size < 3 or high.size < 3:
+        return 0.0, 0.0, None
 
-    # ---- helper to convert frac to mask ----
-    def zone_mask(frac):
-        y0 = y_min + frac[0] * span
-        y1 = y_min + frac[1] * span
-        return (y >= y0) & (y <= y1), y0, y1
+    sign_low = np.sign(np.median(low))
+    sign_high = np.sign(np.median(high))
+    if (sign_low < 0 and sign_high > 0):
+        dz = -dz
+        d2z = -d2z
 
-    # ---- find peak + bounds ----
-    def peak_and_bounds(mask, mode="min"):  # "min" for concave, "max" for convex
-        idx = np.where(mask)[0]
-        if idx.size < 10:
-            return None, None, None
+    mid_mask = (y >= np.percentile(y, 35)) & (y <= np.percentile(y, 65))
+    idx_mid = np.where(mid_mask)[0]
+    if idx_mid.size == 0:
+        return 0.0, 0.0, None
 
-        kk = kappa[idx]
-        if mode == "min":
-            p_local = int(np.argmin(kk))
-        else:
-            p_local = int(np.argmax(kk))
-        p = int(idx[p_local])
-        k_peak = float(kappa[p])
-        if abs(k_peak) < 1e-9:
-            return p, p, p
+    j = idx_mid[np.argmin(np.abs(d2z[idx_mid]))]
+    y_j = float(y[j])
 
-        # Try zero-crossings around p
-        # left
-        iL = None
-        for i in range(p, 1, -1):
-            if mask[i] and mask[i-1]:
-                if np.sign(kappa[i]) != np.sign(kappa[i-1]):
-                    iL = i
-                    break
-        # right
-        iR = None
-        for i in range(p, len(kappa)-1):
-            if mask[i] and mask[i+1]:
-                if np.sign(kappa[i]) != np.sign(kappa[i+1]):
-                    iR = i
-                    break
+    y_bot = float(np.percentile(y, 8))
+    y_top = float(np.percentile(y, 92))
+    i_bot = int(np.argmin(np.abs(y - y_bot)))
+    i_top = int(np.argmin(np.abs(y - y_top)))
 
-        # If no sign change, fallback to threshold on |kappa|
-        thr = threshold_ratio * abs(k_peak)
-
-        if iL is None:
-            for i in range(p, 0, -1):
-                if not mask[i]:
-                    continue
-                if abs(kappa[i]) < thr:
-                    iL = i
-                    break
-        if iR is None:
-            for i in range(p, len(kappa)):
-                if not mask[i]:
-                    continue
-                if abs(kappa[i]) < thr:
-                    iR = i
-                    break
-
-        if iL is None:
-            iL = int(idx[0])
-        if iR is None:
-            iR = int(idx[-1])
-
-        # Ensure ordering
-        if iR <= iL:
-            iL = int(idx[0])
-            iR = int(idx[-1])
-
-        return iL, p, iR
-
-    # Zones
-    m_lo, ylo0, ylo1 = zone_mask(lord_frac)
-    m_ky, yky0, yky1 = zone_mask(kyph_frac)
-
-    # Lombaire concavité: on veut "le côté concave" -> souvent κ négatif, mais orientation peut inverser.
-    # On décide le mode (min ou max) selon le signe dominant de κ dans la zone.
-    kk_lo = kappa[m_lo]
-    if kk_lo.size < 10:
-        return 0.0, 0.0, None, None, None, None
-    sign_dom_lo = np.sign(np.median(kk_lo))
-    # concave = "pic de courbure du signe dominant" (en magnitude)
-    # si signe dominant positif, concave correspond au max; sinon au min.
-    mode_lo = "min" if sign_dom_lo <= 0 else "max"
-
-    iL_lo, p_lo, iR_lo = peak_and_bounds(m_lo, mode=mode_lo)
-
-    # Dorsale convexité: pareil, signe peut varier; on prend le signe dominant en dorsale et le pic correspondant.
-    kk_ky = kappa[m_ky]
-    if kk_ky.size < 10:
-        return 0.0, 0.0, None, None, None, None
-    sign_dom_ky = np.sign(np.median(kk_ky))
-    mode_ky = "max" if sign_dom_ky >= 0 else "min"
-
-    iL_ky, p_ky, iR_ky = peak_and_bounds(m_ky, mode=mode_ky)
-
-    # Angles = diff de tangentes aux bornes
     theta = np.degrees(np.arctan(dz))
-    lord = float(abs(theta[iR_lo] - theta[iL_lo])) if (iL_lo is not None and iR_lo is not None) else 0.0
-    kyph = float(abs(theta[iR_ky] - theta[iL_ky])) if (iL_ky is not None and iR_ky is not None) else 0.0
+    lordosis = float(abs(theta[j] - theta[i_bot]))
+    kyphosis = float(abs(theta[i_top] - theta[j]))
 
-    return lord, kyph, (iL_lo, p_lo, iR_lo), (iL_ky, p_ky, iR_ky), (ylo0, ylo1), (yky0, yky1)
+    if (y_j - y_bot) < 0.15 * (y_top - y_bot) or (y_top - y_j) < 0.15 * (y_top - y_bot):
+        y_j = float(np.percentile(y, 50))
+        j = int(np.argmin(np.abs(y - y_j)))
+        lordosis = float(abs(theta[j] - theta[i_bot]))
+        kyphosis = float(abs(theta[i_top] - theta[j]))
 
-# ==============================
-# COBB PROXY (front)
-# ==============================
+    return lordosis, kyphosis, y_j
+
 def estimate_cobb_proxy_front(spine, smooth_win=21):
+    """
+    Cobb-like proxy: angle entre tangentes haut/bas sur x(y) (frontale).
+    Retourne: angle_deg, fit_bot(a,b), fit_top(a,b), y_ranges(y10,y30,y70,y90)
+    """
     if spine.shape[0] < 30:
         return 0.0, None, None, None
 
@@ -580,7 +518,113 @@ def estimate_cobb_proxy_front(spine, smooth_win=21):
     return float(np.degrees(ang)), (float(a_bot), float(b_bot)), (float(a_top), float(b_top)), (float(y10), float(y30), float(y70), float(y90))
 
 # ==============================
-# PLOTS
+# ✅ NOUVEAU : Courbures frontales lombaire/dorsale (AJOUT)
+# ==============================
+def frontal_curvature_metrics(spine, smooth_win=21,
+                              lomb_frac=(0.12, 0.45),
+                              thor_frac=(0.55, 0.90),
+                              threshold_ratio=0.20):
+    """
+    Mesure courbure frontale sur x(y).
+    Retour:
+      - kappa_peak_lomb, kappa_rms_lomb, angle_lomb_deg
+      - kappa_peak_thor, kappa_rms_thor, angle_thor_deg
+    Unités:
+      κ en 1/cm, angle en degrés.
+    """
+    s = spine[np.argsort(spine[:, 1])]
+    y = s[:, 1].astype(float)
+    x = s[:, 0].astype(float)
+
+    if y.size < 35:
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    n = len(x)
+    w = int(smooth_win)
+    if w % 2 == 0:
+        w += 1
+    if w >= n:
+        w = n - 1 if (n - 1) % 2 == 1 else n - 2
+    w = max(9, w)
+
+    x_s = savgol_filter(x, w, 3)
+    dx = np.gradient(x_s, y)
+    d2x = np.gradient(dx, y)
+
+    # Courbure 2D (y->x)
+    kappa = d2x / np.power(1.0 + dx * dx, 1.5)
+    theta = np.degrees(np.arctan(dx))
+
+    y_min, y_max = float(y.min()), float(y.max())
+    span = max(1e-6, y_max - y_min)
+
+    def zone_mask(frac):
+        y0 = y_min + frac[0] * span
+        y1 = y_min + frac[1] * span
+        return (y >= y0) & (y <= y1)
+
+    def peak_and_bounds(mask):
+        idx = np.where(mask)[0]
+        if idx.size < 12:
+            return None, None, None
+
+        p = int(idx[np.argmax(np.abs(kappa[idx]))])
+        k_peak = float(kappa[p])
+        if abs(k_peak) < 1e-9:
+            return int(idx[0]), p, int(idx[-1])
+
+        thr = threshold_ratio * abs(k_peak)
+
+        # bornes = zéro-crossing sinon seuil
+        iL = None
+        for i in range(p, 1, -1):
+            if mask[i] and mask[i-1] and (np.sign(kappa[i]) != np.sign(kappa[i-1])):
+                iL = i
+                break
+        iR = None
+        for i in range(p, len(kappa)-1):
+            if mask[i] and mask[i+1] and (np.sign(kappa[i]) != np.sign(kappa[i+1])):
+                iR = i
+                break
+
+        if iL is None:
+            for i in range(p, 0, -1):
+                if mask[i] and abs(kappa[i]) < thr:
+                    iL = i
+                    break
+        if iR is None:
+            for i in range(p, len(kappa)):
+                if mask[i] and abs(kappa[i]) < thr:
+                    iR = i
+                    break
+
+        if iL is None: iL = int(idx[0])
+        if iR is None: iR = int(idx[-1])
+        if iR <= iL:
+            iL, iR = int(idx[0]), int(idx[-1])
+
+        return iL, p, iR
+
+    def metrics_for(frac):
+        mask = zone_mask(frac)
+        idx = np.where(mask)[0]
+        if idx.size < 12:
+            return 0.0, 0.0, 0.0
+
+        kz = kappa[idx]
+        k_peak = float(np.max(np.abs(kz)))
+        k_rms = float(np.sqrt(np.mean(kz * kz)))
+
+        iL, p, iR = peak_and_bounds(mask)
+        ang = float(abs(theta[iR] - theta[iL])) if (iL is not None) else 0.0
+        return k_peak, k_rms, ang
+
+    kpk_lo, krms_lo, ang_lo = metrics_for(lomb_frac)
+    kpk_th, krms_th, ang_th = metrics_for(thor_frac)
+    return (kpk_lo, krms_lo, ang_lo, kpk_th, krms_th, ang_th)
+
+# ==============================
+# PLOTS (INCHANGE)
 # ==============================
 def plot_colored_curve(ax, x, y, q, lw=2.8):
     if len(x) < 2:
@@ -633,17 +677,7 @@ def make_asymmetry_heatmap(grid):
     return fig
 
 # ==============================
-# MESURES / UI
-# ==============================
-def classify_range(val, lo, hi):
-    if val < lo:
-        return "Trop faible"
-    if val > hi:
-        return "Trop élevée"
-    return "Normale"
-
-# ==============================
-# UI — SIDEBAR
+# UI — SIDEBAR (MODIF : toggle courbures frontales)
 # ==============================
 with st.sidebar:
     st.header("👤 Dossier Patient")
@@ -651,27 +685,7 @@ with st.sidebar:
     prenom = st.text_input("Prénom", "Jean")
 
     st.divider()
-    st.subheader("🧭 Axes (Revopoint)")
-    up_choice = st.selectbox("Axe vertical (hauteur)", ["AUTO", "X", "Y", "Z"], index=0)
-    st.caption("👉 Si les graphes sont couchés : choisis Z (très fréquent).")
-
-    st.divider()
-    st.subheader("📏 Zones (fractions hauteur)")
-    st.caption("Verticale tangentielle (zone dorsale)")
-    tan_lo = st.slider("Tangence dorsale — bas (%)", 40, 80, 65, step=1) / 100.0
-    tan_hi = st.slider("Tangence dorsale — haut (%)", 70, 98, 92, step=1) / 100.0
-    tan_q = st.slider("Tangence — quantile Z (%)", 90, 100, 98, step=1)
-
-    st.caption("Zone Lordose (lombaire)")
-    lo_lo = st.slider("Lordose — bas (%)", 0, 40, 12, step=1) / 100.0
-    lo_hi = st.slider("Lordose — haut (%)", 20, 70, 45, step=1) / 100.0
-
-    st.caption("Zone Cyphose (dorsale)")
-    ky_lo = st.slider("Cyphose — bas (%)", 30, 85, 55, step=1) / 100.0
-    ky_hi = st.slider("Cyphose — haut (%)", 50, 98, 90, step=1) / 100.0
-
-    st.divider()
-    st.subheader("🧩 Raster (surface)")
+    st.subheader("🧩 Raster (Revopoint)")
     dx = st.slider("Résolution X (cm)", 0.2, 1.2, 0.5, step=0.1)
     dy = st.slider("Résolution Y (cm)", 0.2, 1.2, 0.5, step=0.1)
     edge_q = st.slider("Bords (quantile X)", 5, 20, 10, step=1)
@@ -680,17 +694,23 @@ with st.sidebar:
     st.subheader("🧽 Lissage courbe")
     do_smooth = st.toggle("Activer", True)
     strong_smooth = st.toggle("Lissage fort (anti-pics)", True)
-    smooth_window = st.slider("Fenêtre lissage (courbe)", 5, 151, 91, step=2)
+    smooth_window = st.slider("Fenêtre lissage", 5, 151, 91, step=2)
     median_k = st.slider("Anti-pics (médian)", 3, 31, 11, step=2)
 
     st.divider()
-    st.subheader("📐 Angles par courbure")
-    angle_smooth = st.slider("Lissage angles (fenêtre)", 9, 61, 21, step=2)
-    thr_ratio = st.slider("Seuil bornes courbure (%)", 5, 50, 20, step=1) / 100.0
-    st.caption("Bornes = inflexions κ=0 sinon seuil |κ| < ratio*|κ_peak|.")
+    st.subheader("📐 Angles sagittaux")
+    angle_smooth = st.slider("Lissage angles (fenêtre)", 7, 41, 21, step=2)
+
+    st.divider()
+    st.subheader("📈 Courbures frontales (x(y)) — optionnel")
+    front_curv_enabled = st.toggle("Mesurer courbure frontale lombaire/dorsale", True)
+    front_curv_smooth = st.slider("Lissage courbures frontales (fenêtre)", 9, 61, 21, step=2)
+    front_thr = st.slider("Seuil bornes courbure (%)", 5, 50, 20, step=1) / 100.0
+    st.caption("κ = x''/(1+x'^2)^(3/2), angle = diff de tangentes aux bornes.")
 
     st.divider()
     st.subheader("📐 Cobb (proxy) — optionnel")
+    # On garde le Cobb dans le code, mais tu peux le désactiver/ignorer.
     cobb_enabled = st.toggle("Afficher angle de Cobb (proxy)", False)
     cobb_smooth = st.slider("Lissage Cobb (fenêtre)", 7, 41, 21, step=2)
 
@@ -714,7 +734,7 @@ with st.sidebar:
 # ==============================
 # MAIN
 # ==============================
-st.title("🦴 SpineScan SUPER — V3.5 (Verticale tangentielle + flèche lombaire + angles courbure)")
+st.title("🦴 SpineScan SUPER — V3.2 + Courbures frontales")
 
 if not ply_file:
     st.info("Veuillez importer un fichier .PLY (Revopoint) pour lancer l’analyse.")
@@ -722,22 +742,13 @@ if not ply_file:
 
 if st.button("⚙️ LANCER L'ANALYSE"):
     # ---- Load + convert to cm ----
-    pts0 = load_ply_numpy(ply_file) * 0.1  # mm -> cm
+    pts = load_ply_numpy(ply_file) * 0.1  # mm -> cm
 
-    # Nettoyage léger sur l'axe source Y (avant remap)
-    m = (pts0[:, 1] > np.percentile(pts0[:, 1], 1)) & (pts0[:, 1] < np.percentile(pts0[:, 1], 99))
-    pts0 = pts0[m]
+    # Nettoyage léger Y (garder tout le dos)
+    mask = (pts[:, 1] > np.percentile(pts[:, 1], 1)) & (pts[:, 1] < np.percentile(pts[:, 1], 99))
+    pts = pts[mask]
 
-    # Choix axe vertical
-    if up_choice == "AUTO":
-        up_axis = infer_up_axis(pts0)
-    else:
-        up_axis = {"X": 0, "Y": 1, "Z": 2}[up_choice]
-
-    pts, up_axis_label = remap_to_work_axes(pts0, up_axis=up_axis)
-    up_axis_used_label = ("AUTO→" if up_choice == "AUTO" else "") + up_axis_label
-
-    # Centrage X (robuste)
+    # Centrage X (AFFICHAGE uniquement) -> médiane (robuste)
     pts[:, 0] -= np.median(pts[:, 0])
 
     # Rotation XZ (stabilité)
@@ -753,44 +764,44 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         st.error("Surface insuffisante pour extraire une ligne médiane stable.")
         st.stop()
 
-    # Fiabilité
+    # Fiabilité par point
     q = quality_from_surface(spine_r, meta, psis_conf=psis_conf, max_jump_cm=3.0)
 
-    # Retour repère travail
+    # Retour repère original
     spine = unrotate_spine_xz(spine_r, R)
 
-    # Lissage final
+    # Lissage final (courbe)
     if do_smooth:
         spine = smooth_spine(spine, window=smooth_window, strong=strong_smooth, median_k=median_k)
 
-    # =========================
-    # Verticale tangentielle + flèche lombaire
-    # =========================
-    z_tan, y_tan0, y_tan1 = tangent_vertical_z(spine, frac=(float(tan_lo), float(tan_hi)), q=float(tan_q))
-    fl = lumbar_arrow_vs_tangent_vertical(spine, z_tan, frac=(float(lo_lo), float(lo_hi)))
-    fl_status = classify_range(fl, fl_lo, fl_hi)
+    # ---- flèches sagittales + "verticale" sagittale robuste ----
+    fd, fl, z_ref, z_dev = compute_sagittal_arrows_v3(spine)
 
-    # Déviation latérale max
+    fl_status = classify_range(fl, fl_lo, fl_hi)
     dev_f = float(np.max(np.abs(spine[:, 0]))) if spine.size else 0.0
 
-    # =========================
-    # Angles Lordose/Cyphose par courbure
-    # =========================
-    lord_deg, kyph_deg, lord_idx, kyph_idx, lord_y_range, kyph_y_range = curvature_angles(
-        spine,
-        smooth_win=int(angle_smooth),
-        lord_frac=(float(lo_lo), float(lo_hi)),
-        kyph_frac=(float(ky_lo), float(ky_hi)),
-        threshold_ratio=float(thr_ratio),
-    )
-
+    # Angles sagittaux
+    lord_deg, kyph_deg, y_junction = estimate_lordosis_kyphosis_angles_v2(spine, smooth_win=int(angle_smooth))
     lord_status = classify_range(lord_deg, lord_lo, lord_hi)
     kyph_status = classify_range(kyph_deg, kyph_lo, kyph_hi)
 
-    # Cobb proxy optionnel
+    # Cobb proxy optionnel + segments (inchangé)
     cobb_deg, fit_bot, fit_top, y_ranges = (None, None, None, None)
     if cobb_enabled:
         cobb_deg, fit_bot, fit_top, y_ranges = estimate_cobb_proxy_front(spine, smooth_win=int(cobb_smooth))
+
+    # ✅ Courbures frontales optionnelles
+    front_kpk_lo = front_krms_lo = front_ang_lo = 0.0
+    front_kpk_th = front_krms_th = front_ang_th = 0.0
+    if front_curv_enabled:
+        (front_kpk_lo, front_krms_lo, front_ang_lo,
+         front_kpk_th, front_krms_th, front_ang_th) = frontal_curvature_metrics(
+            spine,
+            smooth_win=int(front_curv_smooth),
+            lomb_frac=(0.12, 0.45),
+            thor_frac=(0.55, 0.90),
+            threshold_ratio=float(front_thr),
+        )
 
     # Couverture / Fiabilité
     y_span_pts = float(np.percentile(pts[:, 1], 98) - np.percentile(pts[:, 1], 2))
@@ -800,7 +811,10 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     reliability_pct = 100.0 * float(np.mean(q >= 0.65)) if q.size else 0.0
     psis_pct = 100.0 * float(psis_conf)
 
-    tan_zone_label = f"{int(tan_lo*100)}–{int(tan_hi*100)}% / q{int(tan_q)}"
+    # Jonction TL en Y relative
+    y0 = float(np.min(spine[:, 1]))
+    y_junction_rel = None if y_junction is None else float(y_junction - y0)
+    y_junction_disp = "n/a" if y_junction_rel is None else f"{y_junction_rel:.1f} cm"
 
     # =========================
     # GRAPHIQUES
@@ -808,7 +822,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     st.write("### 📈 Analyse visuelle")
     c1, c2 = st.columns(2)
 
-    # Frontale
+    # Frontale X vs Y + Cobb lines (option)
     fig_f, ax_f = plt.subplots(figsize=(3.0, 5.2))
     ax_f.scatter(pts[:, 0], pts[:, 1], s=0.2, alpha=0.07, color="gray")
     plot_colored_curve(ax_f, spine[:, 0], spine[:, 1], q, lw=3.0)
@@ -826,12 +840,17 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         ax_f.text(0.02, 0.98, f"Cobb proxy: {cobb_deg:.1f}°", transform=ax_f.transAxes,
                   va="top", ha="left", fontsize=9)
 
+    if front_curv_enabled:
+        ax_f.text(0.02, 0.90,
+                  f"κ lomb peak: {front_kpk_lo:.4f}\nκ dor peak: {front_kpk_th:.4f}",
+                  transform=ax_f.transAxes, va="top", ha="left", fontsize=8, alpha=0.9)
+
     ax_f.set_title("Frontale (couleur = fiabilité)", fontsize=10)
     ax_f.axis("off")
-    img_front_path = save_fig(fig_f, "front_super_v35.png")
+    img_front_path = save_fig(fig_f, "front_super.png")
     c1.pyplot(fig_f)
 
-    # Sagittale: Z vs Y + verticale tangentielle (pointillés)
+    # Sagittale Z vs Y + "verticale" z_ref(y)
     spine_s = spine[np.argsort(spine[:, 1])]
     y_sorted = spine_s[:, 1]
     z_sorted = spine_s[:, 2]
@@ -840,27 +859,15 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     ax_s.scatter(pts[:, 2], pts[:, 1], s=0.2, alpha=0.07, color="gray")
     plot_colored_curve(ax_s, z_sorted, y_sorted, q, lw=3.0)
 
-    # Verticale tangentielle (vraie verticale)
-    ax_s.axvline(z_tan, linestyle="--", linewidth=1.6, alpha=0.85)
-    # Marque zone de tangence (barre)
-    ax_s.plot([z_tan, z_tan], [y_tan0, y_tan1], linestyle="--", linewidth=3.0, alpha=0.18)
+    if z_ref.size:
+        ax_s.plot(z_ref, y_sorted, "k--", alpha=0.75, linewidth=1.4)
 
-    # Option: montrer bornes lordose/cyphose sur Y
-    if lord_idx and isinstance(lord_idx, tuple) and lord_y_range:
-        y0, y1 = lord_y_range
-        ax_s.plot([np.min(z_sorted), np.max(z_sorted)], [y0, y0], alpha=0.15, linewidth=2)
-        ax_s.plot([np.min(z_sorted), np.max(z_sorted)], [y1, y1], alpha=0.15, linewidth=2)
-    if kyph_idx and isinstance(kyph_idx, tuple) and kyph_y_range:
-        y0, y1 = kyph_y_range
-        ax_s.plot([np.min(z_sorted), np.max(z_sorted)], [y0, y0], alpha=0.15, linewidth=2)
-        ax_s.plot([np.min(z_sorted), np.max(z_sorted)], [y1, y1], alpha=0.15, linewidth=2)
+    if y_junction is not None:
+        ax_s.axhline(y_junction, linestyle="--", linewidth=1.4, alpha=0.6)
 
-    ax_s.text(0.02, 0.98, f"Verticale tangentielle: z_tan={z_tan:.2f} cm", transform=ax_s.transAxes,
-              va="top", ha="left", fontsize=9)
-
-    ax_s.set_title("Sagittale (pointillés = verticale tangentielle)", fontsize=10)
+    ax_s.set_title("Sagittale (réf. z(y) en pointillés)", fontsize=10)
     ax_s.axis("off")
-    img_sag_path = save_fig(fig_s, "sag_super_v35.png")
+    img_sag_path = save_fig(fig_s, "sag_super.png")
     c2.pyplot(fig_s)
 
     # Légende fiabilité
@@ -883,7 +890,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         if fig_a is not None:
             st.write("### 🗺️ Asymétrie gauche/droite (option)")
             st.pyplot(fig_a)
-            img_asym_path = save_fig(fig_a, "asym_super_v35.png")
+            img_asym_path = save_fig(fig_a, "asym_super.png")
         else:
             st.info("Asymétrie: données insuffisantes pour une heatmap stable.")
 
@@ -900,6 +907,21 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     fl_ok = (fl_status == "Normale")
     lord_ok = (lord_status == "Normale")
     kyph_ok = (kyph_status == "Normale")
+
+    # Bloc courbures frontales
+    front_block = ""
+    if front_curv_enabled:
+        front_block = f"""
+        <p><b>📈 Courbure frontale lombaire :</b>
+           <br><span style="font-weight:900;">peak |κ| = {front_kpk_lo:.4f} 1/cm</span> &nbsp; | &nbsp;
+           <span style="font-weight:900;">RMS κ = {front_krms_lo:.4f} 1/cm</span>
+           <br><b>Angle courbure lombaire :</b> <span style="font-weight:900;">{front_ang_lo:.1f}°</span></p>
+
+        <p><b>📈 Courbure frontale dorsale :</b>
+           <br><span style="font-weight:900;">peak |κ| = {front_kpk_th:.4f} 1/cm</span> &nbsp; | &nbsp;
+           <span style="font-weight:900;">RMS κ = {front_krms_th:.4f} 1/cm</span>
+           <br><b>Angle courbure dorsale :</b> <span style="font-weight:900;">{front_ang_th:.1f}°</span></p>
+        """
 
     cobb_block = ""
     if cobb_enabled and cobb_deg is not None:
@@ -919,41 +941,40 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         color:#2c3e50;
     ">
       <div style="font-size:1.05rem; line-height:1.55;">
-        <p><b>📏 Flèche lombaire (vs verticale tangentielle) :</b> <span style="font-weight:900;">{fl:.2f} cm</span>
+        <p><b>📏 Flèche lombaire (robuste) :</b> <span style="font-weight:900;">{fl:.2f} cm</span>
           {badge(fl_ok) if show_norms else ""}{norms_fl}</p>
+
+        <p><b>📏 Flèche dorsale (robuste) :</b> <span style="font-weight:900;">{fd:.2f} cm</span></p>
 
         <p><b>↔️ Déviation latérale max :</b> <span style="font-weight:900;">{dev_f:.2f} cm</span></p>
 
-        <p><b>📐 Lordose (courbure concave) :</b> <span style="font-weight:900;">{lord_deg:.1f}°</span>
+        <p><b>📐 Lordose (est.) :</b> <span style="font-weight:900;">{lord_deg:.1f}°</span>
           {badge(lord_ok) if show_norms else ""}{norms_lord}</p>
 
-        <p><b>📐 Cyphose (courbure convexe) :</b> <span style="font-weight:900;">{kyph_deg:.1f}°</span>
+        <p><b>📐 Cyphose (est.) :</b> <span style="font-weight:900;">{kyph_deg:.1f}°</span>
           {badge(kyph_ok) if show_norms else ""}{norms_kyph}</p>
 
-        <p><b>🧭 Verticale tangentielle (dorsale) :</b>
-          <span style="font-weight:900;">z_tan = {z_tan:.2f} cm</span>
-          <br><span style="color:#666; font-size:0.9rem;">Zone {tan_zone_label} (quantile élevé de Z)</span></p>
-
+        {front_block}
         {cobb_block}
+
+        <p><b>🔁 Jonction thoraco-lombaire (rel.) :</b> <span style="font-weight:900;">{y_junction_disp}</span></p>
 
         <p><b>✅ Couverture :</b> <span style="font-weight:900;">{coverage_pct:.0f}%</span>
            &nbsp; <b>Fiabilité :</b> <span style="font-weight:900;">{reliability_pct:.0f}%</span>
            <br><span style="color:#666; font-size:0.9rem;">Fiabilité = % des points avec score ≥ 0.65 | Confiance PSIS = {psis_pct:.0f}%</span></p>
-
-        <p><b>🧭 Axe vertical :</b> <span style="font-weight:900;">{up_axis_used_label}</span></p>
       </div>
 
       <div style="
           margin-top:10px; font-size:0.82rem; color:#555; font-style:italic;
           border-left:3px solid #ccc; padding-left:10px;
       ">
-        Pointillés sagittaux = verticale tangentielle au dos.<br/>
-        Flèche lombaire = max(z_tan - z) dans la zone lombaire.<br/>
-        Angles = différence de tangentes aux bornes de courbure (κ) concave/convexe.
+        “Rasterstéréographie” : surface Z(x,y)=max Z par cellule (anti-biais densité) + ligne médiane par symétrie.<br/>
+        Flèches sagittales : mesurées vs une droite de référence z(y) robuste (pointillés).<br/>
+        Courbures frontales : κ sur x(y) + angle (différence de tangentes aux bornes).
       </div>
     </div>
     """
-    components.html(html_card, height=590 if (cobb_enabled and cobb_deg is not None) else 560, scrolling=False)
+    components.html(html_card, height=720 if front_curv_enabled else 520, scrolling=False)
 
     # =========================
     # PDF
@@ -961,19 +982,27 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     results = {
         "fl": float(fl),
         "fl_status": fl_status,
+        "fd": float(fd),
         "dev_f": float(dev_f),
         "lordosis_deg": float(lord_deg),
         "lordosis_status": lord_status,
         "kyphosis_deg": float(kyph_deg),
         "kyphosis_status": kyph_status,
-        "z_tan": float(z_tan),
-        "tan_zone_label": str(tan_zone_label),
+        "y_junction_rel": y_junction_disp,
         "coverage_pct": float(coverage_pct),
         "reliability_pct": float(reliability_pct),
         "psis_pct": float(psis_pct),
+
+        "front_curv_enabled": bool(front_curv_enabled),
+        "front_kappa_peak_lomb": float(front_kpk_lo),
+        "front_kappa_rms_lomb": float(front_krms_lo),
+        "front_angle_lomb_deg": float(front_ang_lo),
+        "front_kappa_peak_thor": float(front_kpk_th),
+        "front_kappa_rms_thor": float(front_krms_th),
+        "front_angle_thor_deg": float(front_ang_th),
+
         "cobb_enabled": bool(cobb_enabled),
         "cobb_deg": float(cobb_deg) if (cobb_enabled and cobb_deg is not None) else 0.0,
-        "up_axis_used": str(up_axis_used_label),
     }
 
     pdf_path = export_pdf_super({"nom": nom, "prenom": prenom}, results, img_front_path, img_sag_path, img_asym_path)
