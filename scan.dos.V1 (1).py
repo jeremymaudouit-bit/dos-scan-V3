@@ -48,33 +48,94 @@ def load_ply_numpy(file):
 # ==============================
 # PDF (MODIF : ajout courbures frontales)
 # ==============================
-def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+import os
+import tempfile
+
+def export_pdf_super(patient_info, results, img_front_path, img_sag_path, img_asym_path=None):
     tmp = tempfile.gettempdir()
-    path = os.path.join(tmp, "rapport_spinescan_super.pdf")
-    doc = SimpleDocTemplate(path, pagesize=A4)
+    path = os.path.join(tmp, f"Rapport_SpineScan_{patient_info['nom']}.pdf")
+    doc = SimpleDocTemplate(path, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
 
     styles = getSampleStyleSheet()
-    header_s = ParagraphStyle("Header", fontSize=16, textColor=colors.HexColor("#2c3e50"), alignment=1)
-    sub_s = ParagraphStyle("Sub", fontSize=10, textColor=colors.HexColor("#2c3e50"))
+    
+    # --- Styles Personnalisés ---
+    title_style = ParagraphStyle(
+        "TitleStyle", fontSize=18, textColor=colors.HexColor("#2C3E50"), 
+        alignment=1, spaceAfter=10, fontName="Helvetica-Bold"
+    )
+    subtitle_style = ParagraphStyle(
+        "SubTitle", fontSize=12, textColor=colors.HexColor("#34495E"), 
+        spaceBefore=10, spaceAfter=10, fontName="Helvetica-Bold"
+    )
 
     story = []
-    story.append(Paragraph("<b>RAPPORT SPINESCAN SUPER (V3.2 + Courbures frontales)</b>", header_s))
-    story.append(Spacer(1, 0.4 * cm))
-    story.append(Paragraph(f"<b>Patient :</b> {patient_info['prenom']} {patient_info['nom']}", styles["Normal"]))
-    story.append(Spacer(1, 0.3 * cm))
 
+    # 1. En-tête (Titre + Patient)
+    story.append(Paragraph("RAPPORT D'ANALYSE SPINESCAN SUPER", title_style))
+    story.append(Spacer(1, 0.2 * cm))
+    
+    patient_line = f"<b>Patient :</b> {patient_info['prenom']} {patient_info['nom']} <br/><b>Date :</b> 26/02/2026"
+    story.append(Paragraph(patient_line, styles["Normal"]))
+    story.append(Spacer(1, 0.8 * cm))
+
+    # 2. Tableau de données stylisé
+    story.append(Paragraph("Résultats de l'Analyse", subtitle_style))
+    
+    # On prépare les lignes du tableau
     data = [
-        ["Indicateur", "Valeur"],
-        ["Flèche lombaire (robuste)", f"{results['fl']:.2f} cm ({results['fl_status']})"],
-        ["Flèche dorsale (robuste)", f"{results['fd']:.2f} cm"],
+        [Paragraph("<b>Indicateur</b>", styles["Normal"]), Paragraph("<b>Valeur / Statut</b>", styles["Normal"])],
+        ["Flèche lombaire", f"{results['fl']:.2f} cm ({results['fl_status']})"],
+        ["Flèche dorsale", f"{results['fd']:.2f} cm"],
         ["Déviation latérale max", f"{results['dev_f']:.2f} cm"],
         ["Lordose (est.)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
         ["Cyphose (est.)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
         ["Jonction TL (rel.)", results["y_junction_rel"]],
         ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
-        ["Confiance PSIS", f"{results['psis_pct']:.0f}%"],
     ]
 
+    # Création du tableau avec ReportLab
+    table = Table(data, colWidths=[8*cm, 8*cm])
+    
+    # Style du tableau (Bordures, Couleurs alternées, Police)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")), # En-tête bleu foncé
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#F2F4F4")), # Fond gris clair
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]), # Zebra stripes
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+    ]))
+    
+    story.append(table)
+    story.append(Spacer(1, 1 * cm))
+
+    # 3. Images (Vues Sagittale et Frontale côte à côte)
+    story.append(Paragraph("Clichés d'Analyse", subtitle_style))
+    
+    try:
+        # On redimensionne les images pour qu'elles rentrent sur la page
+        img_f = Image(img_front_path, width=7*cm, height=9*cm, kind='proportional')
+        img_s = Image(img_sag_path, width=7*cm, height=9*cm, kind='proportional')
+        
+        # Tableau pour mettre les images côte à côte
+        img_table = Table([[img_f, img_s]], colWidths=[8.5*cm, 8.5*cm])
+        img_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
+        story.append(img_table)
+    except Exception as e:
+        story.append(Paragraph(f"Erreur chargement images : {e}", styles["Normal"]))
+
+    # Génération finale
+    doc.build(story)
+    return path
     # ✅ Ajout courbures frontales si activées
     if results.get("front_curv_enabled", False):
         data += [
@@ -1082,6 +1143,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     st.divider()
     with open(pdf_path, "rb") as f:
         st.download_button("📥 Télécharger le rapport PDF", f, f"Rapport_SpineScan_SUPER_{nom}.pdf")
+
 
 
 
