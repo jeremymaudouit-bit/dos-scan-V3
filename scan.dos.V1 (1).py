@@ -90,7 +90,6 @@ def export_pdf_super(patient_info, results, img_front_path, img_sag_path, img_as
     data = [
         [Paragraph("<b>Indicateur</b>", styles["Normal"]), Paragraph("<b>Valeur / Statut</b>", styles["Normal"])],
         ["Flèche lombaire", f"{results['fl']:.2f} cm ({results['fl_status']})"],
-        ["Flèche dorsale", f"{results['fd']:.2f} cm"],
         ["Déviation latérale max", f"{results['dev_f']:.2f} cm"],
         ["Lordose (est.)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
         ["Cyphose (est.)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
@@ -1143,6 +1142,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     st.divider()
     with open(pdf_path, "rb") as f:
         st.download_button("📥 Télécharger le rapport PDF", f, f"Rapport_SpineScan_SUPER_{nom}.pdf")
+
 
 
 
