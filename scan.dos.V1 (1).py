@@ -1,10 +1,12 @@
 # ==============================
-# SpineScan SUPER (Revopoint) — V3.3
-# FIXES:
-# 1) Axe vertical configurable (AUTO / X / Y / Z) + remapping cohérent
-# 2) "Verticale" sagittale VRAIE (plumb line) = z constant (axvline) + option "trend z(y)"
-# 3) Lordose/Cyphose = angle de convexité/concavité via inflexions (d2z) + tangentes
-# 4) Flèches robustes (vs plumb line ou vs trend line)
+# SpineScan SUPER (Revopoint) — V3.4
+# MODIFS DEMANDEES :
+# ✅ Axe vertical configurable (AUTO / X / Y / Z) + remapping cohérent
+# ✅ Référence de "verticalité" = tangente dorsale (0°) tracée en pointillés
+# ✅ On NE calcule PLUS de "flèche dorsale" (fd supprimée)
+# ✅ Lordose & Cyphose = angles relatifs (|theta_zone - theta_ref|)
+#    où theta_ref = angle tangente dorsale (référence 0°)
+# ✅ Flèche lombaire = max |z - z_ref(y)| dans la zone lombaire, avec z_ref(y) = tangente dorsale
 # + UI + PDF + Fiabilité + Cobb proxy optionnel + Asymétrie optionnelle
 # ==============================
 
@@ -58,22 +60,21 @@ def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
     sub_s = ParagraphStyle("Sub", fontSize=10, textColor=colors.HexColor("#2c3e50"))
 
     story = []
-    story.append(Paragraph("<b>RAPPORT SPINESCAN SUPER (V3.3)</b>", header_s))
+    story.append(Paragraph("<b>RAPPORT SPINESCAN SUPER (V3.4)</b>", header_s))
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph(f"<b>Patient :</b> {patient_info['prenom']} {patient_info['nom']}", styles["Normal"]))
     story.append(Spacer(1, 0.3 * cm))
 
     data = [
         ["Indicateur", "Valeur"],
-        ["Flèche lombaire (robuste)", f"{results['fl']:.2f} cm ({results['fl_status']})"],
-        ["Flèche dorsale (robuste)", f"{results['fd']:.2f} cm"],
+        ["Flèche lombaire (vs tangente dorsale)", f"{results['fl']:.2f} cm ({results['fl_status']})"],
         ["Déviation latérale max", f"{results['dev_f']:.2f} cm"],
-        ["Lordose (convexité/concavité)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
-        ["Cyphose (convexité/concavité)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
+        ["Lordose (angle vs ref 0°)", f"{results['lordosis_deg']:.1f}° ({results['lordosis_status']})"],
+        ["Cyphose (angle vs ref 0°)", f"{results['kyphosis_deg']:.1f}° ({results['kyphosis_status']})"],
+        ["Référence verticalité", f"Tangente dorsale = 0° (θref={results['theta_ref']:.1f}°)"],
+        ["Axe vertical utilisé", results["up_axis_used"]],
         ["Couverture / Fiabilité", f"{results['coverage_pct']:.0f}% / {results['reliability_pct']:.0f}%"],
         ["Confiance PSIS", f"{results['psis_pct']:.0f}%"],
-        ["Référence sagittale", results["sag_ref_label"]],
-        ["Axe vertical utilisé", results["up_axis_used"]],
     ]
     if results.get("cobb_enabled", False):
         data.append(["Angle Cobb (proxy) (frontale)", f"{results['cobb_deg']:.1f}°"])
@@ -105,11 +106,11 @@ def export_pdf_super(patient_info, results, img_front, img_sag, img_asym=None):
 
     story.append(Spacer(1, 0.25 * cm))
     story.append(Paragraph(
-        "Note : l’angle de Cobb affiché est un <b>proxy de suivi</b> basé sur la courbe frontale du dos (non radiographique). "
-        "Les flèches sagittales sont mesurées par rapport à une référence sagittale robuste : "
-        "<b>verticale vraie (z constant)</b> ou <b>droite de tendance z(y)</b> selon le choix. "
-        "Les angles lordose/cyphose sont estimés dans le plan sagittal via <b>inflexions (z''=0)</b> et "
-        "<b>différence de tangentes</b> (angle de convexité/concavité).",
+        "Note : la référence de verticalité est définie par la <b>tangente dorsale</b> (zone haute) et fixée à <b>0°</b>. "
+        "La flèche lombaire est mesurée comme le maximum de |z - z_ref(y)| sur la zone lombaire, "
+        "avec z_ref(y) issue de la tangente dorsale. "
+        "Les angles lordose et cyphose sont des angles <b>relatifs</b> (différence d’angles de tangentes par rapport à la référence). "
+        "L’angle de Cobb est un <b>proxy de suivi</b> non radiographique.",
         styles["Normal"]
     ))
 
@@ -179,24 +180,19 @@ def infer_up_axis(pts):
 
 def remap_to_work_axes(pts, up_axis):
     """
-    Objectif: travailler avec:
+    Repère de travail:
       X = gauche/droite
       Y = vertical (hauteur)
       Z = profondeur (sagittal)
-    up_axis : 0/1/2 = axe source considéré vertical
-    Retourne pts_work, label
     """
     if up_axis == 1:
         return pts.copy(), "Y"
     if up_axis == 2:
-        # source Z est vertical -> (X, Z, Y)
         return pts[:, [0, 2, 1]].copy(), "Z"
-    # up_axis == 0
-    # source X est vertical -> (Y, X, Z)
     return pts[:, [1, 0, 2]].copy(), "X"
 
 # ==============================
-# ROTATION CORRECTION (XZ) — dans le repère de travail
+# ROTATION CORRECTION (XZ) — repère de travail
 # ==============================
 def estimate_rotation_xz(pts):
     y = pts[:, 1]
@@ -354,163 +350,129 @@ def quality_from_surface(spine_r, meta, psis_conf=0.0, max_jump_cm=3.0):
     return base.astype(float)
 
 # ==============================
-# SAGITTAL REF: trend z(y) (robuste) OU plumb line z=const
+# RÉFÉRENCE VERTICALITÉ = TANGENTE DORSALE (0°)
 # ==============================
-def robust_line_z_of_y(spine, yq_low=8, yq_high=92, nbins=70):
+def fit_tangent_z_of_y(spine, frac=(0.65, 0.92)):
+    """
+    Fit z = a*y + b sur la zone dorsale (haut du dos).
+    Retour: a, b, theta_deg (= arctan(a)), y0, y1
+    """
     s = spine[np.argsort(spine[:, 1])]
     y = s[:, 1].astype(float)
     z = s[:, 2].astype(float)
 
-    y0, y1 = np.percentile(y, [yq_low, yq_high])
-    m = (y >= y0) & (y <= y1)
-    y, z = y[m], z[m]
-    if y.size < 10:
-        return 0.0, float(np.median(z))
+    if y.size < 20:
+        a = 0.0
+        b = float(np.median(z)) if z.size else 0.0
+        return a, b, float(np.degrees(np.arctan(a))), float(y.min()) if y.size else 0.0, float(y.max()) if y.size else 1.0
 
-    edges = np.linspace(y0, y1, nbins + 1)
+    y_min, y_max = float(y.min()), float(y.max())
+    span = max(1e-6, y_max - y_min)
+    y0 = y_min + frac[0] * span
+    y1 = y_min + frac[1] * span
+    m = (y >= y0) & (y <= y1)
+
+    if np.count_nonzero(m) < 8:
+        # fallback: top 25%
+        y0 = y_min + 0.75 * span
+        y1 = y_max
+        m = (y >= y0) & (y <= y1)
+
+    if np.count_nonzero(m) < 8:
+        a = 0.0
+        b = float(np.median(z))
+    else:
+        yy = y[m]
+        zz = z[m]
+
+        # robust: médiane par bins
+        nb = 20
+        edges = np.linspace(float(yy.min()), float(yy.max()), nb + 1)
+        yc, zc = [], []
+        for i in range(nb):
+            mm = (yy >= edges[i]) & (yy < edges[i + 1])
+            if np.count_nonzero(mm) < 3:
+                continue
+            yc.append(0.5 * (edges[i] + edges[i + 1]))
+            zc.append(float(np.median(zz[mm])))
+
+        if len(yc) >= 6:
+            a, b = np.polyfit(np.array(yc), np.array(zc), 1)
+        else:
+            a, b = np.polyfit(yy, zz, 1)
+
+    theta = float(np.degrees(np.arctan(float(a))))
+    return float(a), float(b), theta, float(y0), float(y1)
+
+def fit_tangent_in_zone(spine, frac=(0.12, 0.45)):
+    """
+    Fit z = a*y + b sur une zone (fractions en hauteur).
+    Retour: a, b, theta_deg, y0, y1
+    """
+    s = spine[np.argsort(spine[:, 1])]
+    y = s[:, 1].astype(float)
+    z = s[:, 2].astype(float)
+
+    if y.size < 20:
+        a = 0.0
+        b = float(np.median(z)) if z.size else 0.0
+        return a, b, float(np.degrees(np.arctan(a))), float(y.min()) if y.size else 0.0, float(y.max()) if y.size else 1.0
+
+    y_min, y_max = float(y.min()), float(y.max())
+    span = max(1e-6, y_max - y_min)
+    y0 = y_min + frac[0] * span
+    y1 = y_min + frac[1] * span
+    m = (y >= y0) & (y <= y1)
+    if np.count_nonzero(m) < 8:
+        a = 0.0
+        b = float(np.median(z))
+        return a, b, float(np.degrees(np.arctan(a))), float(y0), float(y1)
+
+    yy = y[m]
+    zz = z[m]
+
+    nb = 22
+    edges = np.linspace(float(yy.min()), float(yy.max()), nb + 1)
     yc, zc = [], []
-    for i in range(nbins):
-        mm = (y >= edges[i]) & (y < edges[i + 1])
+    for i in range(nb):
+        mm = (yy >= edges[i]) & (yy < edges[i + 1])
         if np.count_nonzero(mm) < 3:
             continue
         yc.append(0.5 * (edges[i] + edges[i + 1]))
-        zc.append(float(np.median(z[mm])))
+        zc.append(float(np.median(zz[mm])))
 
-    if len(yc) < 6:
-        return 0.0, float(np.median(z))
+    if len(yc) >= 6:
+        a, b = np.polyfit(np.array(yc), np.array(zc), 1)
+    else:
+        a, b = np.polyfit(yy, zz, 1)
 
-    yc = np.array(yc)
-    zc = np.array(zc)
-    a, b = np.polyfit(yc, zc, 1)
-    return float(a), float(b)
+    theta = float(np.degrees(np.arctan(float(a))))
+    return float(a), float(b), theta, float(y0), float(y1)
 
-def sagittal_reference(spine, mode="plumb"):
+def angle_relative(theta_zone, theta_ref):
+    return float(abs(theta_zone - theta_ref))
+
+def lumbar_arrow_vs_ref_tangent(spine, a_ref, b_ref, frac=(0.12, 0.45)):
     """
-    mode:
-      - "plumb": z_ref = constant median(z) in mid band
-      - "trend": z_ref(y) = a*y + b robust
-    Return: z_ref_array, label
+    Flèche lombaire = max |z - (a_ref*y + b_ref)| sur la zone lombaire.
     """
-    s = spine[np.argsort(spine[:, 1])]
-    y = s[:, 1].astype(float)
-    z = s[:, 2].astype(float)
-    if y.size < 10:
-        return np.full_like(z, np.median(z)), "plumb"
-
-    if mode == "trend":
-        a, b = robust_line_z_of_y(s, 8, 92, 70)
-        return a * y + b, "trend z(y)"
-    # plumb
-    y20, y80 = np.percentile(y, [20, 80])
-    m = (y >= y20) & (y <= y80)
-    z0 = float(np.median(z[m])) if np.count_nonzero(m) >= 5 else float(np.median(z))
-    return np.full_like(z, z0), "plumb z=const"
-
-def compute_sagittal_arrows(spine, ref_mode="plumb", lordose_frac=(0.08, 0.45), kyphose_frac=(0.55, 0.92)):
     s = spine[np.argsort(spine[:, 1])]
     y = s[:, 1].astype(float)
     z = s[:, 2].astype(float)
     if y.size < 20:
-        return 0.0, 0.0, np.array([]), np.array([]), "n/a"
-
-    z_ref, label = sagittal_reference(s, mode=ref_mode)
-    z_dev = z - z_ref
-
-    y_min, y_max = float(np.min(y)), float(np.max(y))
-    span = (y_max - y_min) if (y_max > y_min) else 1.0
-
-    lo0 = y_min + lordose_frac[0] * span
-    lo1 = y_min + lordose_frac[1] * span
-    th0 = y_min + kyphose_frac[0] * span
-    th1 = y_min + kyphose_frac[1] * span
-
-    m_lomb = (y >= lo0) & (y <= lo1)
-    m_thor = (y >= th0) & (y <= th1)
-
-    fl = float(np.max(np.abs(z_dev[m_lomb]))) if np.count_nonzero(m_lomb) >= 5 else 0.0
-    fd = float(np.max(np.abs(z_dev[m_thor]))) if np.count_nonzero(m_thor) >= 5 else 0.0
-
-    return fd, fl, z_ref, z_dev, label
-
-# ==============================
-# ANGLES: convexité/concavité via inflexions
-# ==============================
-def angle_by_inflections(y, dz, d2z, y_lo, y_hi, kind="lordosis"):
-    m = (y >= y_lo) & (y <= y_hi)
-    if np.count_nonzero(m) < 18:
         return 0.0
 
-    yy = y[m]
-    d1 = dz[m]
-    d2 = d2z[m]
-
-    # Pic de courbure dans la zone
-    if kind == "lordosis":
-        k = int(np.argmin(d2))   # concavité (selon convention)
-    else:
-        k = int(np.argmax(d2))   # convexité
-
-    # indices inflexion (changement de signe de d2) autour du pic
-    # on cherche un zéro-crossing à gauche et à droite du pic
-    left = None
-    for i in range(k, 1, -1):
-        if np.sign(d2[i]) != np.sign(d2[i - 1]):
-            left = i
-            break
-    right = None
-    for i in range(k, len(d2) - 1):
-        if np.sign(d2[i]) != np.sign(d2[i + 1]):
-            right = i
-            break
-
-    if left is None or right is None or right == left:
-        return 0.0
-
-    thL = np.degrees(np.arctan(d1[left]))
-    thR = np.degrees(np.arctan(d1[right]))
-    return float(abs(thR - thL))
-
-def estimate_lordosis_kyphosis_angles(spine, smooth_win=21):
-    if spine.shape[0] < 35:
-        return 0.0, 0.0
-
-    s = spine[np.argsort(spine[:, 1])]
-    y = s[:, 1].astype(float)
-    z = s[:, 2].astype(float)
-
-    n = len(z)
-    w = int(smooth_win)
-    if w % 2 == 0:
-        w += 1
-    if w >= n:
-        w = n - 1 if (n - 1) % 2 == 1 else n - 2
-    w = max(9, w)
-
-    z_s = savgol_filter(z, w, 3)
-    dz = np.gradient(z_s, y)
-    d2z = np.gradient(dz, y)
-
-    # Zones (ajustables)
     y_min, y_max = float(y.min()), float(y.max())
-    span = y_max - y_min if y_max > y_min else 1.0
+    span = max(1e-6, y_max - y_min)
+    y0 = y_min + frac[0] * span
+    y1 = y_min + frac[1] * span
+    m = (y >= y0) & (y <= y1)
+    if np.count_nonzero(m) < 8:
+        return 0.0
 
-    y_lo0, y_lo1 = y_min + 0.10 * span, y_min + 0.52 * span
-    y_ky0, y_ky1 = y_min + 0.48 * span, y_min + 0.92 * span
-
-    lord = angle_by_inflections(y, dz, d2z, y_lo0, y_lo1, kind="lordosis")
-    kyph = angle_by_inflections(y, dz, d2z, y_ky0, y_ky1, kind="kyphosis")
-
-    # Si tout est à 0, c'est souvent une inversion avant/arrière: on tente un flip z -> -z
-    if (lord < 1e-6 and kyph < 1e-6) and spine.shape[0] >= 35:
-        z_s2 = savgol_filter(-z, w, 3)
-        dz2 = np.gradient(z_s2, y)
-        d2z2 = np.gradient(dz2, y)
-        lord2 = angle_by_inflections(y, dz2, d2z2, y_lo0, y_lo1, kind="lordosis")
-        kyph2 = angle_by_inflections(y, dz2, d2z2, y_ky0, y_ky1, kind="kyphosis")
-        if (lord2 + kyph2) > (lord + kyph):
-            lord, kyph = lord2, kyph2
-
-    return float(lord), float(kyph)
+    z_ref = a_ref * y + b_ref
+    dev = z - z_ref
+    return float(np.max(np.abs(dev[m])))
 
 # ==============================
 # COBB PROXY (front)
@@ -620,8 +582,21 @@ with st.sidebar:
     st.divider()
     st.subheader("🧭 Axes (Revopoint)")
     up_choice = st.selectbox("Axe vertical (hauteur)", ["AUTO", "X", "Y", "Z"], index=0)
-    sag_ref_mode = st.selectbox("Référence sagittale (pointillés)", ["Plumb line (verticale vraie)", "Trend z(y) (droite inclinée)"], index=0)
-    st.caption("👉 Si la ligne pointillée paraît horizontale : change l’axe vertical (souvent Z).")
+    st.caption("👉 Si les graphes sont couchés : choisis Z (très fréquent).")
+
+    st.divider()
+    st.subheader("📏 Zones tangentes (fractions hauteur)")
+    st.caption("Référence verticalité (dorsale): 0° = tangente zone haute")
+    ref_lo = st.slider("Réf dorsale — bas (%)", 40, 80, 65, step=1) / 100.0
+    ref_hi = st.slider("Réf dorsale — haut (%)", 70, 98, 92, step=1) / 100.0
+
+    st.caption("Zone Lordose (lombaire)")
+    lo_lo = st.slider("Lordose — bas (%)", 0, 40, 12, step=1) / 100.0
+    lo_hi = st.slider("Lordose — haut (%)", 20, 70, 45, step=1) / 100.0
+
+    st.caption("Zone Cyphose (dorsale)")
+    ky_lo = st.slider("Cyphose — bas (%)", 30, 80, 50, step=1) / 100.0
+    ky_hi = st.slider("Cyphose — haut (%)", 50, 98, 78, step=1) / 100.0
 
     st.divider()
     st.subheader("🧩 Raster (surface)")
@@ -635,11 +610,6 @@ with st.sidebar:
     strong_smooth = st.toggle("Lissage fort (anti-pics)", True)
     smooth_window = st.slider("Fenêtre lissage", 5, 151, 91, step=2)
     median_k = st.slider("Anti-pics (médian)", 3, 31, 11, step=2)
-
-    st.divider()
-    st.subheader("📐 Angles sagittaux")
-    angle_smooth = st.slider("Lissage angles (fenêtre)", 9, 61, 21, step=2)
-    st.caption("Angles = différence de tangentes aux inflexions (convexité/concavité).")
 
     st.divider()
     st.subheader("📐 Cobb (proxy) — optionnel")
@@ -666,7 +636,7 @@ with st.sidebar:
 # ==============================
 # MAIN
 # ==============================
-st.title("🦴 SpineScan SUPER — V3.3 (Axes + verticale vraie + angles convexité)")
+st.title("🦴 SpineScan SUPER — V3.4 (Réf verticalité = tangente dorsale 0°)")
 
 if not ply_file:
     st.info("Veuillez importer un fichier .PLY (Revopoint) pour lancer l’analyse.")
@@ -676,7 +646,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     # ---- Load + convert to cm ----
     pts0 = load_ply_numpy(ply_file) * 0.1  # mm -> cm
 
-    # Nettoyage léger (retirer extrêmes)
+    # Nettoyage léger (retirer extrêmes sur l'axe Y source, avant remap: on prend l'axe 1 par défaut)
     m = (pts0[:, 1] > np.percentile(pts0[:, 1], 1)) & (pts0[:, 1] < np.percentile(pts0[:, 1], 99))
     pts0 = pts0[m]
 
@@ -686,13 +656,13 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     else:
         up_axis = {"X": 0, "Y": 1, "Z": 2}[up_choice]
 
-    pts = remap_to_work_axes(pts0, up_axis=up_axis)[0]
-    up_axis_used_label = ("AUTO→" if up_choice == "AUTO" else "") + ("X" if up_axis == 0 else "Y" if up_axis == 1 else "Z")
+    pts, up_axis_label = remap_to_work_axes(pts0, up_axis=up_axis)
+    up_axis_used_label = ("AUTO→" if up_choice == "AUTO" else "") + up_axis_label
 
     # Centrage X (affichage / extraction)
     pts[:, 0] -= np.median(pts[:, 0])
 
-    # Rotation XZ pour stabiliser le "plan" et la symétrie
+    # Rotation XZ pour stabiliser le plan/symétrie
     R = estimate_rotation_xz(pts)
     pts_r = apply_rotation_xz(pts, R)
 
@@ -705,7 +675,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         st.error("Surface insuffisante pour extraire une ligne médiane stable.")
         st.stop()
 
-    # Fiabilité par point
+    # Fiabilité
     q = quality_from_surface(spine_r, meta, psis_conf=psis_conf, max_jump_cm=3.0)
 
     # Retour repère travail (dé-rotation)
@@ -715,19 +685,26 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     if do_smooth:
         spine = smooth_spine(spine, window=smooth_window, strong=strong_smooth, median_k=median_k)
 
-    # Sagittal reference mode
-    ref_mode = "plumb" if "Plumb" in sag_ref_mode else "trend"
+    # --- Référence verticalité = tangente dorsale ---
+    ref_frac = (float(ref_lo), float(ref_hi))
+    a_ref, b_ref, theta_ref, y_ref0, y_ref1 = fit_tangent_z_of_y(spine, frac=ref_frac)
 
-    # Flèches sagittales robustes
-    fd, fl, z_ref, z_dev, sag_ref_label = compute_sagittal_arrows(spine, ref_mode=ref_mode)
+    # --- Tangentes zones lordose / cyphose ---
+    a_lo, b_lo, theta_lo, y_lo0, y_lo1 = fit_tangent_in_zone(spine, frac=(float(lo_lo), float(lo_hi)))
+    a_ky, b_ky, theta_ky, y_ky0, y_ky1 = fit_tangent_in_zone(spine, frac=(float(ky_lo), float(ky_hi)))
 
-    fl_status = classify_range(fl, fl_lo, fl_hi)
-    dev_f = float(np.max(np.abs(spine[:, 0]))) if spine.size else 0.0
+    lord_deg = angle_relative(theta_lo, theta_ref)
+    kyph_deg = angle_relative(theta_ky, theta_ref)
 
-    # Angles sagittaux (convexité/concavité)
-    lord_deg, kyph_deg = estimate_lordosis_kyphosis_angles(spine, smooth_win=int(angle_smooth))
     lord_status = classify_range(lord_deg, lord_lo, lord_hi)
     kyph_status = classify_range(kyph_deg, kyph_lo, kyph_hi)
+
+    # --- Flèche lombaire vs référence dorsale ---
+    fl = lumbar_arrow_vs_ref_tangent(spine, a_ref, b_ref, frac=(float(lo_lo), float(lo_hi)))
+    fl_status = classify_range(fl, fl_lo, fl_hi)
+
+    # Déviation latérale max
+    dev_f = float(np.max(np.abs(spine[:, 0]))) if spine.size else 0.0
 
     # Cobb proxy
     cobb_deg, fit_bot, fit_top, y_ranges = (None, None, None, None)
@@ -768,10 +745,10 @@ if st.button("⚙️ LANCER L'ANALYSE"):
 
     ax_f.set_title("Frontale (couleur = fiabilité)", fontsize=10)
     ax_f.axis("off")
-    img_front_path = save_fig(fig_f, "front_super_v33.png")
+    img_front_path = save_fig(fig_f, "front_super_v34.png")
     c1.pyplot(fig_f)
 
-    # Sagittale Z vs Y + référence
+    # Sagittale Z vs Y + tangentes (réf dorsale en pointillés)
     spine_s = spine[np.argsort(spine[:, 1])]
     y_sorted = spine_s[:, 1]
     z_sorted = spine_s[:, 2]
@@ -780,16 +757,27 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     ax_s.scatter(pts[:, 2], pts[:, 1], s=0.2, alpha=0.07, color="gray")
     plot_colored_curve(ax_s, z_sorted, y_sorted, q, lw=3.0)
 
-    if z_ref.size:
-        if ref_mode == "trend":
-            ax_s.plot(z_ref, y_sorted, "k--", alpha=0.75, linewidth=1.4)
-        else:
-            # plumb line: z_ref constant => verticale vraie (x constant)
-            ax_s.axvline(float(z_ref[0]), linestyle="--", linewidth=1.4, alpha=0.75)
+    # Tangente référence (pointillés) — 0°
+    yy = np.array([y_ref0, y_ref1])
+    zz = a_ref * yy + b_ref
+    ax_s.plot(zz, yy, "k--", linewidth=1.6, alpha=0.85)
 
-    ax_s.set_title(f"Sagittale (réf. {sag_ref_label})", fontsize=10)
+    # Tangente lordose
+    yy_lo = np.array([y_lo0, y_lo1])
+    zz_lo = a_lo * yy_lo + b_lo
+    ax_s.plot(zz_lo, yy_lo, linewidth=1.8, alpha=0.9)
+
+    # Tangente cyphose
+    yy_ky = np.array([y_ky0, y_ky1])
+    zz_ky = a_ky * yy_ky + b_ky
+    ax_s.plot(zz_ky, yy_ky, linewidth=1.8, alpha=0.9)
+
+    ax_s.text(0.02, 0.98, f"Réf dorsale: θref={theta_ref:.1f}° (fixée à 0°)", transform=ax_s.transAxes,
+              va="top", ha="left", fontsize=9)
+
+    ax_s.set_title("Sagittale (réf = tangente dorsale pointillée)", fontsize=10)
     ax_s.axis("off")
-    img_sag_path = save_fig(fig_s, "sag_super_v33.png")
+    img_sag_path = save_fig(fig_s, "sag_super_v34.png")
     c2.pyplot(fig_s)
 
     # Légende fiabilité
@@ -812,7 +800,7 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         if fig_a is not None:
             st.write("### 🗺️ Asymétrie gauche/droite (option)")
             st.pyplot(fig_a)
-            img_asym_path = save_fig(fig_a, "asym_super_v33.png")
+            img_asym_path = save_fig(fig_a, "asym_super_v34.png")
         else:
             st.info("Asymétrie: données insuffisantes pour une heatmap stable.")
 
@@ -848,18 +836,19 @@ if st.button("⚙️ LANCER L'ANALYSE"):
         color:#2c3e50;
     ">
       <div style="font-size:1.05rem; line-height:1.55;">
-        <p><b>📏 Flèche lombaire (robuste) :</b> <span style="font-weight:900;">{fl:.2f} cm</span>
+        <p><b>📏 Flèche lombaire (vs tangente dorsale) :</b> <span style="font-weight:900;">{fl:.2f} cm</span>
           {badge(fl_ok) if show_norms else ""}{norms_fl}</p>
-
-        <p><b>📏 Flèche dorsale (robuste) :</b> <span style="font-weight:900;">{fd:.2f} cm</span></p>
 
         <p><b>↔️ Déviation latérale max :</b> <span style="font-weight:900;">{dev_f:.2f} cm</span></p>
 
-        <p><b>📐 Lordose (convexité/concavité) :</b> <span style="font-weight:900;">{lord_deg:.1f}°</span>
+        <p><b>📐 Lordose (angle vs ref 0°) :</b> <span style="font-weight:900;">{lord_deg:.1f}°</span>
           {badge(lord_ok) if show_norms else ""}{norms_lord}</p>
 
-        <p><b>📐 Cyphose (convexité/concavité) :</b> <span style="font-weight:900;">{kyph_deg:.1f}°</span>
+        <p><b>📐 Cyphose (angle vs ref 0°) :</b> <span style="font-weight:900;">{kyph_deg:.1f}°</span>
           {badge(kyph_ok) if show_norms else ""}{norms_kyph}</p>
+
+        <p><b>🧭 Référence verticalité :</b> <span style="font-weight:900;">Tangente dorsale = 0°</span>
+          <br><span style="color:#666; font-size:0.9rem;">θref mesuré = {theta_ref:.1f}° (mais affiché comme 0° pour la référence)</span></p>
 
         {cobb_block}
 
@@ -867,21 +856,20 @@ if st.button("⚙️ LANCER L'ANALYSE"):
            &nbsp; <b>Fiabilité :</b> <span style="font-weight:900;">{reliability_pct:.0f}%</span>
            <br><span style="color:#666; font-size:0.9rem;">Fiabilité = % des points avec score ≥ 0.65 | Confiance PSIS = {psis_pct:.0f}%</span></p>
 
-        <p><b>🧭 Axe vertical :</b> <span style="font-weight:900;">{up_axis_used_label}</span>
-           &nbsp; <b>Réf. sagittale :</b> <span style="font-weight:900;">{sag_ref_label}</span></p>
+        <p><b>🧭 Axe vertical :</b> <span style="font-weight:900;">{up_axis_used_label}</span></p>
       </div>
 
       <div style="
           margin-top:10px; font-size:0.82rem; color:#555; font-style:italic;
           border-left:3px solid #ccc; padding-left:10px;
       ">
-        Surface : Z(x,y)=max Z par cellule (anti-biais densité) + ligne médiane par symétrie.<br/>
-        Flèches sagittales : max |z - z_ref| (lombaire/dorsale) selon la référence choisie.<br/>
-        Angles sagittaux : inflexions (z''=0) + différence de tangentes (angle de convexité/concavité).
+        Référence sagittale : tangente dorsale (pointillés) fixée à 0°.<br/>
+        Flèche lombaire : max |z - z_ref(y)| sur zone lombaire.<br/>
+        Angles : |θ(zone) - θref|.
       </div>
     </div>
     """
-    components.html(html_card, height=520 if (cobb_enabled and cobb_deg is not None) else 490, scrolling=False)
+    components.html(html_card, height=560 if (cobb_enabled and cobb_deg is not None) else 520, scrolling=False)
 
     # =========================
     # PDF
@@ -889,18 +877,17 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     results = {
         "fl": float(fl),
         "fl_status": fl_status,
-        "fd": float(fd),
         "dev_f": float(dev_f),
         "lordosis_deg": float(lord_deg),
         "lordosis_status": lord_status,
         "kyphosis_deg": float(kyph_deg),
         "kyphosis_status": kyph_status,
+        "theta_ref": float(theta_ref),
         "coverage_pct": float(coverage_pct),
         "reliability_pct": float(reliability_pct),
         "psis_pct": float(psis_pct),
         "cobb_enabled": bool(cobb_enabled),
         "cobb_deg": float(cobb_deg) if (cobb_enabled and cobb_deg is not None) else 0.0,
-        "sag_ref_label": str(sag_ref_label),
         "up_axis_used": str(up_axis_used_label),
     }
 
