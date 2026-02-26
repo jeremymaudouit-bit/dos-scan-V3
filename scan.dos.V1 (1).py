@@ -829,23 +829,22 @@ if st.button("⚙️ LANCER L'ANALYSE"):
     if do_smooth:
         spine = smooth_spine(spine, window=smooth_window, strong=strong_smooth, median_k=median_k)
 
-    # ---- flèches sagittales + "verticale" sagittale robuste ----
-   # Ancienne droite robuste z_ref(y) si tu veux la garder pour debug:
-# fd, fl_old, z_ref, z_dev = compute_sagittal_arrows_v3(spine)
+    # Ancienne droite robuste z_ref(y) si tu veux la garder pour debug:
+    # fd, fl_old, z_ref, z_dev = compute_sagittal_arrows_v3(spine)
 
-# ✅ Nouvelle verticale tangentielle "collée dorsal"
-z_tan, (y_tan0, y_tan1) = sagittal_tangent_vertical_z(
-    spine,
-    dorsal_frac=(0.55, 0.92),   # tu peux ajuster
-    z_quantile=98.0             # 98–99 conseillé
-)
+    # ✅ Nouvelle verticale tangentielle "collée dorsal"
+    z_tan, (y_tan0, y_tan1) = sagittal_tangent_vertical_z(
+        spine,
+        dorsal_frac=(0.55, 0.92),   # tu peux ajuster
+        z_quantile=98.0             # 98–99 conseillé
+    )
 
-# ✅ Nouvelle flèche lombaire vs verticale tangentielle
-fl = lumbar_arrow_vs_tangent_vertical(spine, z_tan, lomb_frac=(0.08, 0.45))
+    # ✅ Nouvelle flèche lombaire vs verticale tangentielle
+    fl = lumbar_arrow_vs_tangent_vertical(spine, z_tan, lomb_frac=(0.08, 0.45))
 
-# Si tu veux encore afficher fd = 0 ou rien:
-fd = 0.0
-z_ref = np.array([])  # plus utilisé pour la verticale
+    # Si tu veux encore afficher fd = 0 ou rien:
+    fd = 0.0
+    z_ref = np.array([])  # plus utilisé pour la verticale
 
     fl_status = classify_range(fl, fl_lo, fl_hi)
     dev_f = float(np.max(np.abs(spine[:, 0]))) if spine.size else 0.0
@@ -1080,4 +1079,5 @@ z_ref = np.array([])  # plus utilisé pour la verticale
     st.divider()
     with open(pdf_path, "rb") as f:
         st.download_button("📥 Télécharger le rapport PDF", f, f"Rapport_SpineScan_SUPER_{nom}.pdf")
+
 
